@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.github
+.DS_Store
+*.md
+!README.md
+coverage
+tests
+playwright-report
+.env*
+!.env.example
+.vercel
+agents
+docs
+.taskmaster

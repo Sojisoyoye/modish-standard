@@ -1,0 +1,49 @@
+{
+  "name": "modish-standard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:e2e": "playwright test",
+    "test:all": "npm run test:coverage && npm run test:e2e",
+    "docker:dev": "docker compose up --build",
+    "docker:prod": "docker compose -f docker-compose.prod.yml up --build -d",
+    "docker:down": "docker compose down && docker compose -f docker-compose.prod.yml down",
+    "sanity:dev": "sanity dev",
+    "seed": "tsx scripts/seed-cms.ts"
+  },
+  "dependencies": {
+    "@portabletext/react": "^6.0.3",
+    "@sanity/image-url": "^2.0.3",
+    "@sanity/vision": "^5.16.0",
+    "next": "16.1.6",
+    "next-sanity": "^12.1.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.6",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "png-to-ico": "^3.0.1",
+    "tailwindcss": "^4",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5"
+  }
+}

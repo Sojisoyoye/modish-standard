@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+:root {
+  /* Brand colors — derived from Modish Standard logo */
+  --color-navy: #1B2D72;
+  --color-navy-dark: #101D50;
+  --color-navy-light: #EEF2FF;
+  --color-green: #2D8B3C;
+  --color-green-dark: #236930;
+  --color-green-light: #F0FAF2;
+
+  /* Neutral palette */
+  --color-white: #FFFFFF;
+  --color-surface: #F8F9FA;
+  --color-border: #E5E7EB;
+  --color-text: #111827;
+  --color-text-muted: #6B7280;
+
+  /* Legacy aliases kept for backward-compatibility */
+  --color-gold: #2D8B3C;
+  --color-dark: #0C1A4A;
+  --color-card: #1B2D72;
+  --color-warm-white: #FFFFFF;
+  --color-darker: #101D50;
+}
+
+body {
+  background-color: var(--color-white);
+  color: var(--color-text);
+}
+
+html {
+  scroll-behavior: smooth;
+  background-color: #ffffff;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-surface);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-navy);
+}

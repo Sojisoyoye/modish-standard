@@ -1,0 +1,570 @@
+{
+  "project": "modish-standard",
+  "version": "1.0.0",
+  "generated_at": "2026-03-16T16:40:00Z",
+  "phases": [
+    {
+      "id": "phase-0",
+      "name": "Foundation",
+      "tasks": [
+        {
+          "id": "T001",
+          "title": "Initialise Next.js 14 project with TypeScript + Tailwind CSS",
+          "description": "Create Next.js 14 app with TypeScript, Tailwind CSS, App Router, src directory",
+          "phase": "phase-0",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": [],
+          "estimated_hours": 1,
+          "acceptance_criteria": [
+            "npx next dev starts without errors",
+            "TypeScript strict mode enabled",
+            "Tailwind CSS applies styles correctly",
+            "App Router structure at /src/app"
+          ],
+          "agent": "coder"
+        },
+        {
+          "id": "T002",
+          "title": "Configure ESLint and Prettier",
+          "description": "Set up ESLint with Next.js recommended config and Prettier",
+          "phase": "phase-0",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T001"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": [
+            "npx eslint src/ runs without errors",
+            "Prettier formats on save"
+          ],
+          "agent": "coder"
+        },
+        {
+          "id": "T003",
+          "title": "Set up Sanity project and connect to Next.js",
+          "description": "Install next-sanity, create client, configure image URL builder",
+          "phase": "phase-0",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T001"],
+          "estimated_hours": 1,
+          "acceptance_criteria": [
+            "Sanity client imports without error",
+            "Image URL builder generates valid URLs"
+          ],
+          "agent": "coder"
+        },
+        {
+          "id": "T004",
+          "title": "Configure environment variables structure",
+          "description": "Create .env.example with all required variables, add .env.local to .gitignore",
+          "phase": "phase-0",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T001"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": [
+            ".env.example exists with all vars documented",
+            ".env.local is in .gitignore"
+          ],
+          "agent": "coder"
+        },
+        {
+          "id": "T005",
+          "title": "Set up base layout with Header, Footer, WhatsApp float",
+          "description": "Create root layout with Cormorant Garamond + DM Sans fonts, Header with nav, Footer, WhatsAppFloat component",
+          "phase": "phase-0",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T001", "T003"],
+          "estimated_hours": 2,
+          "acceptance_criteria": [
+            "Header renders with logo and navigation links",
+            "Footer renders with business info",
+            "WhatsApp floating button visible bottom-right",
+            "Fonts load via next/font"
+          ],
+          "agent": "coder"
+        }
+      ]
+    },
+    {
+      "id": "phase-1",
+      "name": "Sanity CMS Schemas",
+      "tasks": [
+        {
+          "id": "T010",
+          "title": "Create product schema",
+          "description": "Full product document schema with all fields from PRD",
+          "phase": "phase-1",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T003"],
+          "estimated_hours": 1,
+          "acceptance_criteria": ["Product schema validates in Sanity Studio"],
+          "agent": "coder"
+        },
+        {
+          "id": "T011",
+          "title": "Create category schema",
+          "description": "Category document schema with name, slug, description, image",
+          "phase": "phase-1",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T003"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": ["Category schema validates in Sanity Studio"],
+          "agent": "coder"
+        },
+        {
+          "id": "T012",
+          "title": "Create showroom schema",
+          "description": "Showroom document schema with address, hours, gallery",
+          "phase": "phase-1",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T003"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": ["Showroom schema validates in Sanity Studio"],
+          "agent": "coder"
+        },
+        {
+          "id": "T013",
+          "title": "Create siteSettings schema",
+          "description": "Global settings for SEO defaults, WhatsApp number, etc.",
+          "phase": "phase-1",
+          "priority": "medium",
+          "status": "pending",
+          "depends_on": ["T003"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": ["siteSettings schema loads in Studio"],
+          "agent": "coder"
+        },
+        {
+          "id": "T014",
+          "title": "Seed CMS with sample products",
+          "description": "Create seed script with 5 products per category (35 total)",
+          "phase": "phase-1",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T010", "T011"],
+          "estimated_hours": 2,
+          "acceptance_criteria": ["Seed script generates 35 products across 7 categories"],
+          "agent": "coder"
+        }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Pages",
+      "tasks": [
+        {
+          "id": "T020",
+          "title": "Homepage",
+          "description": "Hero banner + Featured Products + Category Highlights + Trust Indicators + Showroom Teaser",
+          "phase": "phase-2",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T005", "T010", "T011"],
+          "estimated_hours": 3,
+          "acceptance_criteria": [
+            "Hero with dual CTAs renders",
+            "Featured products grid shows 8 products",
+            "7 category cards display",
+            "Trust indicators section visible"
+          ],
+          "agent": "coder"
+        },
+        {
+          "id": "T021",
+          "title": "Product catalog page with filters",
+          "description": "Product grid with category sidebar filter, sort, pagination",
+          "phase": "phase-2",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T010", "T005"],
+          "estimated_hours": 3,
+          "acceptance_criteria": [
+            "Products display in grid (2 col mobile, 3-4 desktop)",
+            "Category filter works",
+            "Sort by price/newest works"
+          ],
+          "agent": "coder"
+        },
+        {
+          "id": "T022",
+          "title": "Product detail page",
+          "description": "Gallery + specs table + WhatsApp CTA + related products + breadcrumbs",
+          "phase": "phase-2",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T010", "T005"],
+          "estimated_hours": 3,
+          "acceptance_criteria": [
+            "Product images in gallery",
+            "Specs table renders",
+            "WhatsApp CTA works",
+            "Related products show 4 items"
+          ],
+          "agent": "coder"
+        },
+        {
+          "id": "T023",
+          "title": "Category landing pages",
+          "description": "Dynamic [slug] route for category pages",
+          "phase": "phase-2",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T011", "T021"],
+          "estimated_hours": 1.5,
+          "acceptance_criteria": ["Category pages load with filtered products"],
+          "agent": "coder"
+        },
+        {
+          "id": "T024",
+          "title": "Showroom page",
+          "description": "Map embed + gallery + opening hours",
+          "phase": "phase-2",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T012", "T005"],
+          "estimated_hours": 1.5,
+          "acceptance_criteria": ["Showroom page renders with map, hours, gallery"],
+          "agent": "coder"
+        },
+        {
+          "id": "T025",
+          "title": "Contact page",
+          "description": "Contact form + WhatsApp link + business hours",
+          "phase": "phase-2",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T005"],
+          "estimated_hours": 1.5,
+          "acceptance_criteria": [
+            "Form validates Nigerian phone numbers",
+            "Form submission returns WhatsApp link"
+          ],
+          "agent": "coder"
+        },
+        {
+          "id": "T026",
+          "title": "Search results page",
+          "description": "Search results with filters and zero-results state",
+          "phase": "phase-2",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T021"],
+          "estimated_hours": 1.5,
+          "acceptance_criteria": [
+            "Search returns matching products",
+            "Zero results shows suggested categories"
+          ],
+          "agent": "coder"
+        }
+      ]
+    },
+    {
+      "id": "phase-3",
+      "name": "API Routes",
+      "tasks": [
+        {
+          "id": "T030",
+          "title": "GET /api/products with filter params",
+          "description": "API route to fetch products with optional category, material, thickness filters",
+          "phase": "phase-3",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T010"],
+          "estimated_hours": 1,
+          "acceptance_criteria": [
+            "Returns JSON product list",
+            "Filters by category slug",
+            "Filters by material type"
+          ],
+          "agent": "coder"
+        },
+        {
+          "id": "T031",
+          "title": "POST /api/contact with validation",
+          "description": "Contact form API with Zod validation for Nigerian phone numbers",
+          "phase": "phase-3",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T001"],
+          "estimated_hours": 1,
+          "acceptance_criteria": [
+            "Validates name, phone, message",
+            "Rejects invalid Nigerian phone numbers",
+            "Returns WhatsApp URL on success"
+          ],
+          "agent": "coder"
+        }
+      ]
+    },
+    {
+      "id": "phase-4",
+      "name": "Features",
+      "tasks": [
+        {
+          "id": "T040",
+          "title": "Product search functionality",
+          "description": "Client-side search bar with server-side GROQ search",
+          "phase": "phase-4",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T026"],
+          "estimated_hours": 2,
+          "acceptance_criteria": ["Search returns relevant products by name/description/material"],
+          "agent": "coder"
+        },
+        {
+          "id": "T041",
+          "title": "Product filter system",
+          "description": "Filter by thickness, material, finish, price range",
+          "phase": "phase-4",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T021"],
+          "estimated_hours": 2,
+          "acceptance_criteria": ["All filter criteria work correctly"],
+          "agent": "coder"
+        },
+        {
+          "id": "T042",
+          "title": "WhatsApp deep-link generator",
+          "description": "Utility to generate pre-filled WhatsApp messages for each product",
+          "phase": "phase-4",
+          "priority": "critical",
+          "status": "pending",
+          "depends_on": ["T001"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": ["WhatsApp links open with correct pre-filled message"],
+          "agent": "coder"
+        },
+        {
+          "id": "T043",
+          "title": "Image gallery with lightbox",
+          "description": "Product image gallery with zoom/lightbox on click",
+          "phase": "phase-4",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T022"],
+          "estimated_hours": 2,
+          "acceptance_criteria": ["Gallery shows thumbnails", "Clicking opens lightbox", "Swipe navigation on mobile"],
+          "agent": "coder"
+        },
+        {
+          "id": "T044",
+          "title": "Related products component",
+          "description": "Show 4 related products from same category on product detail page",
+          "phase": "phase-4",
+          "priority": "medium",
+          "status": "pending",
+          "depends_on": ["T022"],
+          "estimated_hours": 1,
+          "acceptance_criteria": ["4 related products from same category displayed"],
+          "agent": "coder"
+        }
+      ]
+    },
+    {
+      "id": "phase-5",
+      "name": "SEO & Performance",
+      "tasks": [
+        {
+          "id": "T050",
+          "title": "Dynamic metadata for all pages",
+          "description": "generateMetadata() on every page with unique title/description",
+          "phase": "phase-5",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T020", "T021", "T022", "T023", "T024", "T025", "T026"],
+          "estimated_hours": 2,
+          "acceptance_criteria": ["Every page has unique title and description"],
+          "agent": "coder"
+        },
+        {
+          "id": "T051",
+          "title": "JSON-LD structured data",
+          "description": "Product, LocalBusiness, BreadcrumbList schema.org data",
+          "phase": "phase-5",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T022", "T025"],
+          "estimated_hours": 1.5,
+          "acceptance_criteria": ["Valid JSON-LD on product and contact pages"],
+          "agent": "coder"
+        },
+        {
+          "id": "T052",
+          "title": "Sitemap.xml generation",
+          "description": "Dynamic sitemap with all product and category URLs",
+          "phase": "phase-5",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T020"],
+          "estimated_hours": 1,
+          "acceptance_criteria": ["/sitemap.xml returns valid XML with all URLs"],
+          "agent": "coder"
+        },
+        {
+          "id": "T053",
+          "title": "robots.txt",
+          "description": "robots.txt allowing crawling with sitemap reference",
+          "phase": "phase-5",
+          "priority": "medium",
+          "status": "pending",
+          "depends_on": ["T052"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": ["/robots.txt accessible and references sitemap"],
+          "agent": "coder"
+        },
+        {
+          "id": "T054",
+          "title": "Image optimization",
+          "description": "next/image everywhere with WebP and lazy loading",
+          "phase": "phase-5",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T020", "T022"],
+          "estimated_hours": 1,
+          "acceptance_criteria": ["All images use next/image with proper alt text"],
+          "agent": "coder"
+        },
+        {
+          "id": "T055",
+          "title": "Google Analytics integration",
+          "description": "GA4 with custom events for WhatsApp clicks and product views",
+          "phase": "phase-5",
+          "priority": "medium",
+          "status": "pending",
+          "depends_on": ["T005"],
+          "estimated_hours": 1,
+          "acceptance_criteria": ["GA script loads afterInteractive", "Custom events fire"],
+          "agent": "coder"
+        }
+      ]
+    },
+    {
+      "id": "phase-6",
+      "name": "Testing & QA",
+      "tasks": [
+        {
+          "id": "T060",
+          "title": "Unit tests for utility functions",
+          "description": "Test WhatsApp link builder, price formatter, image URL builder",
+          "phase": "phase-6",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T042"],
+          "estimated_hours": 1.5,
+          "acceptance_criteria": ["All utility functions have passing tests"],
+          "agent": "tester"
+        },
+        {
+          "id": "T061",
+          "title": "Component tests",
+          "description": "Test ProductCard, ProductFilter, SearchBar, WhatsAppFloat",
+          "phase": "phase-6",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T021", "T022"],
+          "estimated_hours": 2,
+          "acceptance_criteria": ["All key components have passing tests"],
+          "agent": "tester"
+        },
+        {
+          "id": "T062",
+          "title": "Integration tests for API routes",
+          "description": "Test GET /api/products and POST /api/contact",
+          "phase": "phase-6",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T030", "T031"],
+          "estimated_hours": 1.5,
+          "acceptance_criteria": ["API routes handle valid and invalid inputs"],
+          "agent": "tester"
+        },
+        {
+          "id": "T063",
+          "title": "E2E tests",
+          "description": "Playwright tests for homepage, product browse, contact form",
+          "phase": "phase-6",
+          "priority": "medium",
+          "status": "pending",
+          "depends_on": ["T020", "T021", "T025"],
+          "estimated_hours": 3,
+          "acceptance_criteria": ["All E2E tests pass on mobile and desktop"],
+          "agent": "tester"
+        }
+      ]
+    },
+    {
+      "id": "phase-7",
+      "name": "Deployment",
+      "tasks": [
+        {
+          "id": "T070",
+          "title": "GitHub Actions CI/CD workflow",
+          "description": "deploy.yml with quality gate, deploy, E2E, notify jobs",
+          "phase": "phase-7",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T060"],
+          "estimated_hours": 1.5,
+          "acceptance_criteria": ["Workflow runs on push to main"],
+          "agent": "deployment"
+        },
+        {
+          "id": "T071",
+          "title": "Vercel configuration",
+          "description": "vercel.json with headers, redirects, rewrites",
+          "phase": "phase-7",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T001"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": ["vercel.json validates and deploys correctly"],
+          "agent": "deployment"
+        },
+        {
+          "id": "T072",
+          "title": "Environment variables setup",
+          "description": ".env.example with all required variables documented",
+          "phase": "phase-7",
+          "priority": "high",
+          "status": "pending",
+          "depends_on": ["T004"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": [".env.example has all vars with descriptions"],
+          "agent": "deployment"
+        },
+        {
+          "id": "T073",
+          "title": "Custom domain setup instructions",
+          "description": "DNS configuration for modishstandard.com on Vercel",
+          "phase": "phase-7",
+          "priority": "medium",
+          "status": "pending",
+          "depends_on": ["T071"],
+          "estimated_hours": 0.5,
+          "acceptance_criteria": ["DEPLOYMENT.md has DNS instructions"],
+          "agent": "deployment"
+        },
+        {
+          "id": "T074",
+          "title": "Bootstrap and seed scripts",
+          "description": "bootstrap.sh for one-command setup, seed-cms.ts for sample data",
+          "phase": "phase-7",
+          "priority": "medium",
+          "status": "pending",
+          "depends_on": ["T014"],
+          "estimated_hours": 1,
+          "acceptance_criteria": ["bootstrap.sh runs successfully on fresh clone"],
+          "agent": "deployment"
+        }
+      ]
+    }
+  ]
+}
