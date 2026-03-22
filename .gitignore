@@ -37,6 +37,16 @@ yarn-error.log*
 # vercel
 .vercel
 
+# project meta / agent files
+.taskmaster/
+agents/
+docs/
+CLAUDE.md
+DEPLOYMENT.md
+REVIEW_REPORT.md
+TASKS.md
+TEST_REPORT.md
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
