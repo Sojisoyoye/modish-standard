@@ -21,7 +21,7 @@ export default function HeroBanner() {
 
             {/* Headline */}
             <h1 className="font-[family-name:var(--font-display)] text-4xl sm:text-5xl lg:text-6xl font-bold text-[#1B2D72] leading-[1.1] tracking-tight">
-              Premium Board Materials for Nigeria&apos;s Best Craftsmen
+              Premium Building, Furnishing and Interior Design Materials for Nigeria&apos;s Best Craftsmen
             </h1>
 
             {/* Product tagline */}
