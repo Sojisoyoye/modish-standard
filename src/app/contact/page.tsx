@@ -41,6 +41,11 @@ export default async function ContactPage() {
       addressCountry: "NG",
     },
     telephone: showroom.phone?.[0] || "",
+    sameAs: [
+      "https://www.facebook.com/ModishStandardLimited",
+      "https://www.instagram.com/modish.standard",
+      "https://www.tiktok.com/@modish.standard",
+    ],
     openingHoursSpecification: [
       {
         "@type": "OpeningHoursSpecification",
