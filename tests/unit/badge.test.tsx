@@ -26,8 +26,8 @@ describe('Badge', () => {
   it('renders with correct green color class for in_stock', () => {
     const { container } = render(<Badge status="in_stock" />)
     const badge = container.firstChild as HTMLElement
-    expect(badge.className).toContain('bg-green-500/20')
-    expect(badge.className).toContain('text-green-400')
+    expect(badge.className).toContain('bg-[#EEF2FF]')
+    expect(badge.className).toContain('text-[#1B2D72]')
   })
 
   it('renders with default config for unknown status', () => {
