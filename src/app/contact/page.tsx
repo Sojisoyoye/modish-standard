@@ -13,11 +13,15 @@ export const metadata: Metadata = {
 };
 
 const fallbackShowroom: ShowroomInfo = {
-  address: "331, Agege motor road, Challenge bus stop",
-  city: "Mushin",
-  state: "Lagos",
-  mapEmbedUrl: "",
-  phone: ["07080227780"],
+  locations: [
+    {
+      name: "Main Showroom",
+      address: "331, Agege motor road, Challenge bus stop",
+      city: "Mushin",
+      state: "Lagos",
+      phone: ["07080227780"],
+    },
+  ],
   whatsapp: process.env.NEXT_PUBLIC_WHATSAPP_NUMBER || "2347080227780",
   openingHours: { weekdays: "8am - 6pm", saturday: "9am - 4pm", sunday: "Closed" },
   gallery: [],
@@ -27,6 +31,8 @@ export default async function ContactPage() {
   const sanityData = await sanityFetch<ShowroomInfo | null>(SHOWROOM_QUERY, {}, null);
   const showroom = sanityData || fallbackShowroom;
 
+  const primaryLocation = showroom.locations?.[0];
+
   const localBusinessJsonLd = {
     "@context": "https://schema.org",
     "@type": "LocalBusiness",
@@ -35,12 +41,12 @@ export default async function ContactPage() {
       "Premium MDF boards, HDF boards, UV gloss panels, marine boards, edge tapes, doors, and PU stone panels supplier in Lagos, Nigeria.",
     address: {
       "@type": "PostalAddress",
-      streetAddress: showroom.address,
-      addressLocality: showroom.city,
-      addressRegion: showroom.state,
+      streetAddress: primaryLocation?.address ?? "",
+      addressLocality: primaryLocation?.city ?? "",
+      addressRegion: primaryLocation?.state ?? "",
       addressCountry: "NG",
     },
-    telephone: showroom.phone?.[0] || "",
+    telephone: primaryLocation?.phone?.[0] || "",
     sameAs: [
       "https://www.facebook.com/ModishStandardLimited",
       "https://www.instagram.com/modish.standard",

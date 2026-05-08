@@ -32,12 +32,17 @@ export interface Category {
   productCount?: number
 }
 
-export interface ShowroomInfo {
+export interface ShowroomLocation {
+  name: string
   address: string
   city: string
   state: string
-  mapEmbedUrl: string
-  phone: string[]
+  phone?: string[]
+  mapEmbedUrl?: string
+}
+
+export interface ShowroomInfo {
+  locations: ShowroomLocation[]
   whatsapp: string
   openingHours: {
     weekdays: string

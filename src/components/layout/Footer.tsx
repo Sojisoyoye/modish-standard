@@ -5,11 +5,15 @@ import { SHOWROOM_QUERY } from "@/lib/sanity/queries";
 import type { ShowroomInfo } from "@/types";
 
 const fallbackShowroom: ShowroomInfo = {
-  address: "331, Agege motor road, Challenge bus stop",
-  city: "Mushin",
-  state: "Lagos",
-  mapEmbedUrl: "",
-  phone: ["07080227780"],
+  locations: [
+    {
+      name: "Main Showroom",
+      address: "331, Agege motor road, Challenge bus stop",
+      city: "Mushin",
+      state: "Lagos",
+      phone: ["07080227780"],
+    },
+  ],
   whatsapp: process.env.NEXT_PUBLIC_WHATSAPP_NUMBER || "2347080227780",
   openingHours: { weekdays: "8am - 6pm", saturday: "9am - 4pm", sunday: "Closed" },
   gallery: [],
@@ -36,7 +40,8 @@ const categories = [
 export default async function Footer() {
   const sanityData = await sanityFetch<ShowroomInfo | null>(SHOWROOM_QUERY, {}, null);
   const showroom = sanityData || fallbackShowroom;
-  const phone = showroom.phone?.[0] || fallbackShowroom.phone[0];
+  const primaryLocation = showroom.locations?.[0] ?? fallbackShowroom.locations[0];
+  const phone = primaryLocation.phone?.[0] ?? "";
   const whatsappNumber = showroom.whatsapp || fallbackShowroom.whatsapp;
 
   return (
@@ -109,7 +114,7 @@ export default async function Footer() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
                 <span className="text-sm text-white/60 leading-relaxed">
-                  {showroom.address},<br />{showroom.city}, {showroom.state}, Nigeria
+                  {primaryLocation.address},<br />{primaryLocation.city}, {primaryLocation.state}, Nigeria
                 </span>
               </li>
               <li className="flex items-center gap-3">

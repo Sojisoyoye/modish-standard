@@ -14,11 +14,16 @@ export const metadata: Metadata = {
 };
 
 const fallbackData: ShowroomInfo = {
-  address: "15 Aromire Avenue, Ikeja",
-  city: "Lagos",
-  state: "Lagos",
-  mapEmbedUrl: "",
-  phone: ["08012345678"],
+  locations: [
+    {
+      name: "Main Showroom",
+      address: "331, Agege motor road, Challenge bus stop",
+      city: "Mushin",
+      state: "Lagos",
+      phone: ["07080227780"],
+      mapEmbedUrl: "",
+    },
+  ],
   whatsapp: "2348012345678",
   openingHours: {
     weekdays: "8am - 6pm",
@@ -31,6 +36,8 @@ const fallbackData: ShowroomInfo = {
 export default async function ShowroomPage() {
   const sanityData = await sanityFetch<ShowroomInfo | null>(SHOWROOM_QUERY, {}, null);
   const showroom = sanityData || fallbackData;
+  const locations = showroom.locations ?? [];
+  const primaryLocation = locations[0] ?? fallbackData.locations[0];
 
   const whatsappUrl = buildPriceListUrl();
 
@@ -66,28 +73,31 @@ export default async function ShowroomPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                   </svg>
                 </div>
-                Location
+                {locations.length > 1 ? "Our Locations" : "Location"}
               </h2>
-              <div className="space-y-5">
-                <div className="flex items-start gap-4">
-                  <div>
-                    <p className="font-semibold text-gray-800">{showroom.address}</p>
-                    <p className="text-gray-500">{showroom.city}, {showroom.state}, Nigeria</p>
+              <div className="space-y-6">
+                {locations.map((loc, i) => (
+                  <div key={i} className={i > 0 ? "pt-6 border-t border-gray-100" : ""}>
+                    {locations.length > 1 && (
+                      <p className="mb-2 text-xs font-bold uppercase tracking-wider text-[#1B2D72]">{loc.name}</p>
+                    )}
+                    <p className="font-semibold text-gray-800">{loc.address}</p>
+                    <p className="text-gray-500">{loc.city}, {loc.state}, Nigeria</p>
+                    {loc.phone && loc.phone.length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        {loc.phone.map((number, idx) => (
+                          <a
+                            key={idx}
+                            href={`tel:${number}`}
+                            className="block font-semibold text-[#1B2D72] transition hover:text-[#2D8B3C]"
+                          >
+                            {number}
+                          </a>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </div>
-                <div className="flex items-start gap-4">
-                  <div>
-                    {showroom.phone.map((number, idx) => (
-                      <a
-                        key={idx}
-                        href={`tel:${number}`}
-                        className="block font-semibold text-[#1B2D72] transition hover:text-[#2D8B3C]"
-                      >
-                        {number}
-                      </a>
-                    ))}
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
 
@@ -133,10 +143,10 @@ export default async function ShowroomPage() {
 
           {/* Right: Map + Gallery */}
           <div className="flex flex-col gap-8">
-            {showroom.mapEmbedUrl && (
+            {primaryLocation.mapEmbedUrl && (
               <div className="aspect-video overflow-hidden rounded-2xl border border-gray-100 shadow-sm">
                 <iframe
-                  src={showroom.mapEmbedUrl}
+                  src={primaryLocation.mapEmbedUrl}
                   width="100%"
                   height="100%"
                   style={{ border: 0 }}
@@ -169,7 +179,7 @@ export default async function ShowroomPage() {
               </div>
             )}
 
-            {(!showroom.gallery || showroom.gallery.length === 0) && !showroom.mapEmbedUrl && (
+            {(!showroom.gallery || showroom.gallery.length === 0) && !primaryLocation.mapEmbedUrl && (
               <div className="flex aspect-video items-center justify-center rounded-2xl bg-[#F8F9FA] border border-gray-100">
                 <div className="text-center">
                   <svg className="mx-auto h-14 w-14 text-[#1B2D72]/20" fill="none" stroke="currentColor" viewBox="0 0 24 24">

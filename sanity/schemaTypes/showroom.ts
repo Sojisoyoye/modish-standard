@@ -6,36 +6,62 @@ export default defineType({
   type: 'document',
   fields: [
     defineField({
-      name: 'address',
-      title: 'Street Address',
-      type: 'string',
-      validation: (rule) => rule.required(),
-    }),
-    defineField({
-      name: 'city',
-      title: 'City',
-      type: 'string',
-      initialValue: 'Lagos',
-      validation: (rule) => rule.required(),
-    }),
-    defineField({
-      name: 'state',
-      title: 'State',
-      type: 'string',
-      initialValue: 'Lagos',
-      validation: (rule) => rule.required(),
-    }),
-    defineField({
-      name: 'mapEmbedUrl',
-      title: 'Google Maps Embed URL',
-      type: 'url',
-      description: 'Paste the Google Maps embed iframe src URL',
-    }),
-    defineField({
-      name: 'phone',
-      title: 'Phone Numbers',
+      name: 'locations',
+      title: 'Locations / Addresses',
       type: 'array',
-      of: [{ type: 'string' }],
+      description: 'Add one or more physical locations (showrooms, warehouses, etc.)',
+      of: [
+        {
+          type: 'object',
+          fields: [
+            defineField({
+              name: 'name',
+              title: 'Location Name',
+              type: 'string',
+              description: 'e.g. Main Showroom, Warehouse, Ikeja Branch',
+              validation: (rule) => rule.required(),
+            }),
+            defineField({
+              name: 'address',
+              title: 'Street Address',
+              type: 'string',
+              validation: (rule) => rule.required(),
+            }),
+            defineField({
+              name: 'city',
+              title: 'City',
+              type: 'string',
+              initialValue: 'Lagos',
+              validation: (rule) => rule.required(),
+            }),
+            defineField({
+              name: 'state',
+              title: 'State',
+              type: 'string',
+              initialValue: 'Lagos',
+              validation: (rule) => rule.required(),
+            }),
+            defineField({
+              name: 'phone',
+              title: 'Phone Numbers',
+              type: 'array',
+              of: [{ type: 'string' }],
+            }),
+            defineField({
+              name: 'mapEmbedUrl',
+              title: 'Google Maps Embed URL',
+              type: 'url',
+              description: 'Paste the Google Maps embed iframe src URL',
+            }),
+          ],
+          preview: {
+            select: {
+              title: 'name',
+              subtitle: 'address',
+            },
+          },
+        },
+      ],
       validation: (rule) => rule.required().min(1),
     }),
     defineField({
@@ -92,8 +118,7 @@ export default defineType({
   ],
   preview: {
     select: {
-      title: 'address',
-      subtitle: 'city',
+      title: 'whatsapp',
     },
   },
 })

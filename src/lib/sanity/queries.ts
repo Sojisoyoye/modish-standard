@@ -129,11 +129,14 @@ export const SEARCH_PRODUCTS_QUERY = `*[_type == "product" && (
 }`
 
 export const SHOWROOM_QUERY = `*[_type == "showroom"][0] {
-  address,
-  city,
-  state,
-  mapEmbedUrl,
-  phone,
+  locations[] {
+    name,
+    address,
+    city,
+    state,
+    phone,
+    mapEmbedUrl
+  },
   whatsapp,
   openingHours,
   gallery

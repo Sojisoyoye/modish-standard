@@ -26,7 +26,7 @@ export default function ContactForm({ showroom }: ContactFormProps) {
   const [whatsappUrl, setWhatsappUrl] = useState("");
   const [serverError, setServerError] = useState("");
 
-  const phone = showroom.phone?.[0] || "";
+  const locations = showroom.locations || [];
   const whatsappNumber = showroom.whatsapp || "";
 
   const handleChange = (
@@ -192,33 +192,40 @@ export default function ContactForm({ showroom }: ContactFormProps) {
       <aside className="flex flex-col gap-5">
         <div className="rounded-2xl border border-gray-100 bg-white shadow-sm p-7">
           <h3 className="mb-5 font-[family-name:var(--font-display)] text-xl font-bold text-[#1B2D72]">
-            Visit Our Showroom
+            {locations.length > 1 ? "Our Locations" : "Visit Our Showroom"}
           </h3>
-          <div className="space-y-4 text-sm">
-            <div className="flex items-start gap-3">
-              <div className="h-8 w-8 rounded-lg bg-[#EEF2FF] flex items-center justify-center shrink-0 mt-0.5">
-                <svg className="h-4 w-4 text-[#1B2D72]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-              </div>
-              <div>
-                <p className="font-semibold text-gray-800">{showroom.address}</p>
-                <p className="text-gray-500">{showroom.city}, {showroom.state}, Nigeria</p>
-              </div>
-            </div>
-            {phone && (
-              <div className="flex items-center gap-3">
-                <div className="h-8 w-8 rounded-lg bg-[#EEF2FF] flex items-center justify-center shrink-0">
-                  <svg className="h-4 w-4 text-[#1B2D72]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                  </svg>
+          <div className="space-y-5 text-sm">
+            {locations.map((loc, i) => (
+              <div key={i} className={i > 0 ? "pt-5 border-t border-gray-100" : ""}>
+                {locations.length > 1 && (
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wider text-[#1B2D72]">{loc.name}</p>
+                )}
+                <div className="flex items-start gap-3">
+                  <div className="h-8 w-8 rounded-lg bg-[#EEF2FF] flex items-center justify-center shrink-0 mt-0.5">
+                    <svg className="h-4 w-4 text-[#1B2D72]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="font-semibold text-gray-800">{loc.address}</p>
+                    <p className="text-gray-500">{loc.city}, {loc.state}, Nigeria</p>
+                  </div>
                 </div>
-                <a href={`tel:${phone}`} className="font-semibold text-[#1B2D72] transition hover:text-[#2D8B3C]">
-                  {phone}
-                </a>
+                {loc.phone?.[0] && (
+                  <div className="mt-3 flex items-center gap-3">
+                    <div className="h-8 w-8 rounded-lg bg-[#EEF2FF] flex items-center justify-center shrink-0">
+                      <svg className="h-4 w-4 text-[#1B2D72]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                      </svg>
+                    </div>
+                    <a href={`tel:${loc.phone[0]}`} className="font-semibold text-[#1B2D72] transition hover:text-[#2D8B3C]">
+                      {loc.phone[0]}
+                    </a>
+                  </div>
+                )}
               </div>
-            )}
+            ))}
             <div className="pt-2">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Follow Us</p>
               <div className="flex gap-3">
