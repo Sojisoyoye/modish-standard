@@ -141,22 +141,27 @@ export default async function ShowroomPage() {
             </a>
           </div>
 
-          {/* Right: Map + Gallery */}
+          {/* Right: Maps + Gallery */}
           <div className="flex flex-col gap-8">
-            {primaryLocation.mapEmbedUrl && (
-              <div className="aspect-video overflow-hidden rounded-2xl border border-gray-100 shadow-sm">
-                <iframe
-                  src={primaryLocation.mapEmbedUrl}
-                  width="100%"
-                  height="100%"
-                  style={{ border: 0 }}
-                  allowFullScreen
-                  loading="lazy"
-                  referrerPolicy="no-referrer-when-downgrade"
-                  title="Modish Standard Showroom Location"
-                />
+            {locations.filter(loc => loc.mapEmbedUrl).map((loc, i) => (
+              <div key={i}>
+                {locations.filter(l => l.mapEmbedUrl).length > 1 && (
+                  <p className="mb-3 text-xs font-bold uppercase tracking-wider text-[#1B2D72]">{loc.name}</p>
+                )}
+                <div className="aspect-video overflow-hidden rounded-2xl border border-gray-100 shadow-sm">
+                  <iframe
+                    src={loc.mapEmbedUrl}
+                    width="100%"
+                    height="100%"
+                    style={{ border: 0 }}
+                    allowFullScreen
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                    title={`${loc.name} Location`}
+                  />
+                </div>
               </div>
-            )}
+            ))}
 
             {showroom.gallery && showroom.gallery.length > 0 && (
               <div>
@@ -179,7 +184,7 @@ export default async function ShowroomPage() {
               </div>
             )}
 
-            {(!showroom.gallery || showroom.gallery.length === 0) && !primaryLocation.mapEmbedUrl && (
+            {(!showroom.gallery || showroom.gallery.length === 0) && !locations.some(l => l.mapEmbedUrl) && (
               <div className="flex aspect-video items-center justify-center rounded-2xl bg-[#F8F9FA] border border-gray-100">
                 <div className="text-center">
                   <svg className="mx-auto h-14 w-14 text-[#1B2D72]/20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
