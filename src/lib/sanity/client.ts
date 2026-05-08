@@ -11,7 +11,7 @@ const sanityClient: SanityClient | null = isSanityConfigured
       projectId,
       dataset,
       apiVersion: '2024-01-01',
-      useCdn: process.env.NODE_ENV === 'production',
+      useCdn: false,
     })
   : null
 

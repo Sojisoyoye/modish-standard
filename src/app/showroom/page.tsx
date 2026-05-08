@@ -5,7 +5,7 @@ import { buildPriceListUrl } from "@/lib/whatsapp";
 import type { ShowroomInfo } from "@/types";
 import Image from "next/image";
 
-export const revalidate = 300;
+export const revalidate = 60;
 
 export const metadata: Metadata = {
   title: "Showroom | Modish Standard - Visit Us in Lagos",

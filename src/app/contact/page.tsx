@@ -4,7 +4,7 @@ import { SHOWROOM_QUERY } from "@/lib/sanity/queries";
 import type { ShowroomInfo } from "@/types";
 import ContactForm from "./ContactForm";
 
-export const revalidate = 300;
+export const revalidate = 60;
 
 export const metadata: Metadata = {
   title: "Contact Us | Modish Standard - Premium Board Materials Lagos",
