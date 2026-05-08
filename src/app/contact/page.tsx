@@ -29,7 +29,7 @@ const fallbackShowroom: ShowroomInfo = {
 
 export default async function ContactPage() {
   const sanityData = await sanityFetch<ShowroomInfo | null>(SHOWROOM_QUERY, {}, null);
-  const showroom = sanityData || fallbackShowroom;
+  const showroom = sanityData?.locations?.length ? sanityData : fallbackShowroom;
 
   const primaryLocation = showroom.locations?.[0];
 

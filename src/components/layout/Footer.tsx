@@ -39,7 +39,7 @@ const categories = [
 
 export default async function Footer() {
   const sanityData = await sanityFetch<ShowroomInfo | null>(SHOWROOM_QUERY, {}, null);
-  const showroom = sanityData || fallbackShowroom;
+  const showroom = sanityData?.locations?.length ? sanityData : fallbackShowroom;
   const primaryLocation = showroom.locations?.[0] ?? fallbackShowroom.locations[0];
   const phone = primaryLocation.phone?.[0] ?? "";
   const whatsappNumber = showroom.whatsapp || fallbackShowroom.whatsapp;
