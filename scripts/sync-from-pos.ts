@@ -240,7 +240,7 @@ async function sync() {
       const slug = toSlug(name)
 
       return {
-        _id: `product-sku-${p.sku}`,
+        _id: `product-${slug}`,
         _type: 'product' as const,
         sku: p.sku,
         name,
@@ -262,10 +262,9 @@ async function sync() {
     return
   }
 
-  // 5. Fetch existing Sanity products to decide create vs patch
-  const existingIds: string[] = await sanity.fetch(
-    '*[_type == "product"]._id'
-  )
+  // 5. Fetch existing slug-based product IDs (exclude legacy product-sku-* documents)
+  const allIds: string[] = await sanity.fetch('*[_type == "product"]._id')
+  const existingIds = allIds.filter(id => !id.startsWith('product-sku-'))
   const existingSet = new Set(existingIds)
 
   // 6. Fetch Sanity category refs (needed for new products)
@@ -312,6 +311,7 @@ async function sync() {
       await sanity.createOrReplace({
         _id: p._id,
         _type: p._type,
+        sku: p.sku,
         name: p.name,
         slug: p.slug,
         category: { _type: 'reference', _ref: categoryRef },

@@ -1,4 +1,4 @@
-export const FEATURED_PRODUCTS_QUERY = `*[_type == "product" && isFeatured == true] | order(_createdAt desc) [0...8] {
+export const FEATURED_PRODUCTS_QUERY = `*[_type == "product" && isFeatured == true && !(_id match "product-sku-*")] | order(_createdAt desc) [0...8] {
   _id,
   name,
   slug,
@@ -15,7 +15,7 @@ export const FEATURED_PRODUCTS_QUERY = `*[_type == "product" && isFeatured == tr
   }
 }`
 
-export const PRODUCTS_BY_CATEGORY_QUERY = `*[_type == "product" && category->slug.current == $categorySlug] | order(_createdAt desc) {
+export const PRODUCTS_BY_CATEGORY_QUERY = `*[_type == "product" && !(_id match "product-sku-*") && category->slug.current == $categorySlug] | order(_createdAt desc) {
   _id,
   name,
   slug,
@@ -73,6 +73,7 @@ export const ALL_CATEGORIES_QUERY = `*[_type == "category"] | order(name asc) {
 }`
 
 export const ALL_PRODUCTS_QUERY = `*[_type == "product"
+  && !(_id match "product-sku-*")
   && ($categorySlug == "" || category->slug.current == $categorySlug)
   && ($materialType == "" || materialType == $materialType)
   && ($stockStatus == "" || stockStatus == $stockStatus)
@@ -104,7 +105,7 @@ export const ALL_PRODUCTS_QUERY = `*[_type == "product"
   }
 }`
 
-export const SEARCH_PRODUCTS_QUERY = `*[_type == "product" && (
+export const SEARCH_PRODUCTS_QUERY = `*[_type == "product" && !(_id match "product-sku-*") && (
   name match $searchTerm ||
   shortDescription match $searchTerm ||
   materialType match $searchTerm ||

@@ -204,7 +204,7 @@ async function runSync(categorySlug?: string): Promise<SyncResult> {
       const shortDescription = buildShortDescription(name, catSlug, colorFinish)
 
       return {
-        _id: `product-sku-${p.sku}`,
+        _id: `product-${slug}`,
         _type: 'product',
         sku: p.sku,
         name,
@@ -221,7 +221,8 @@ async function runSync(categorySlug?: string): Promise<SyncResult> {
     })
     .filter(p => !categorySlug || p.categorySlug === categorySlug)
 
-  const existingIds: string[] = await sanity.fetch('*[_type == "product"]._id')
+  const allIds: string[] = await sanity.fetch('*[_type == "product"]._id')
+  const existingIds = allIds.filter((id: string) => !id.startsWith('product-sku-'))
   const existingSet = new Set(existingIds)
 
   const sanityCategories: Array<{ _id: string; slug: { current: string } }> = await sanity.fetch(
@@ -251,6 +252,7 @@ async function runSync(categorySlug?: string): Promise<SyncResult> {
       await sanity.createOrReplace({
         _id: p._id,
         _type: p._type,
+        sku: p.sku,
         name: p.name,
         slug: p.slug,
         category: { _type: 'reference', _ref: categoryRef },

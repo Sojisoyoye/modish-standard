@@ -26,6 +26,13 @@ export default defineType({
       validation: (rule) => rule.required(),
     }),
     defineField({
+      name: 'sku',
+      title: 'SKU',
+      type: 'string',
+      description: 'POS reference — auto-populated by sync script',
+      readOnly: true,
+    }),
+    defineField({
       name: 'shortDescription',
       title: 'Short Description',
       type: 'text',
