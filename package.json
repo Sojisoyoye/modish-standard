@@ -16,7 +16,10 @@
     "docker:prod": "docker compose -f docker-compose.prod.yml up --build -d",
     "docker:down": "docker compose down && docker compose -f docker-compose.prod.yml down",
     "sanity:dev": "sanity dev",
-    "seed": "tsx scripts/seed-cms.ts"
+    "seed": "tsx scripts/seed-cms.ts",
+    "sync": "tsx scripts/sync-from-pos.ts",
+    "bot": "tsx scripts/telegram-bot.ts",
+    "bot:dev": "tsx --watch scripts/telegram-bot.ts"
   },
   "dependencies": {
     "@portabletext/react": "^6.0.3",
@@ -26,6 +29,8 @@
     "next-sanity": "^12.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "telegraf": "^4.16.3",
+    "xlsx": "^0.18.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {

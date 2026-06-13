@@ -1,0 +1,274 @@
+import * as XLSX from 'xlsx'
+
+export interface ParsedProduct {
+  name: string
+  categorySlug: string
+  price?: number
+  costPrice?: number
+  stock?: number
+}
+
+const VALID_SLUGS = new Set([
+  'block-boards',
+  'uv-gloss-boards',
+  'mdf-boards',
+  'hdf-boards',
+  'marine-boards',
+  'edge-tapes',
+  'doors',
+  'pu-stone-panels',
+  'accessories',
+])
+
+export function slugifyCategory(raw: string): string {
+  const normalized = raw.trim().toLowerCase()
+
+  const aliases: Record<string, string> = {
+    'block board': 'block-boards',
+    'block boards': 'block-boards',
+    'bb board': 'block-boards',
+    'bb boards': 'block-boards',
+    'uv gloss board': 'uv-gloss-boards',
+    'uv gloss boards': 'uv-gloss-boards',
+    'uv board': 'uv-gloss-boards',
+    'uv boards': 'uv-gloss-boards',
+    'uv gloss': 'uv-gloss-boards',
+    'mdf board': 'mdf-boards',
+    'mdf boards': 'mdf-boards',
+    'mdf': 'mdf-boards',
+    'hdf board': 'hdf-boards',
+    'hdf boards': 'hdf-boards',
+    'hdf': 'hdf-boards',
+    'marine board': 'marine-boards',
+    'marine boards': 'marine-boards',
+    'marine': 'marine-boards',
+    'edge tape': 'edge-tapes',
+    'edge tapes': 'edge-tapes',
+    'edge banding': 'edge-tapes',
+    'door': 'doors',
+    'doors': 'doors',
+    'pu stone panel': 'pu-stone-panels',
+    'pu stone panels': 'pu-stone-panels',
+    'pu stone': 'pu-stone-panels',
+    'pu panel': 'pu-stone-panels',
+    'pu panels': 'pu-stone-panels',
+    'stone panel': 'pu-stone-panels',
+    'stone panels': 'pu-stone-panels',
+    'accessory': 'accessories',
+    'accessories': 'accessories',
+  }
+
+  if (aliases[normalized]) return aliases[normalized]
+
+  const slug = normalized
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+
+  if (VALID_SLUGS.has(slug)) return slug
+
+  for (const valid of Array.from(VALID_SLUGS)) {
+    if (slug.includes(valid.replace(/-/g, '')) || valid.includes(slug.replace(/-/g, ''))) {
+      return valid
+    }
+  }
+
+  return slug || 'accessories'
+}
+
+function inferCategoryFromName(name: string): string {
+  const n = name.toUpperCase()
+
+  if (/ BB($| |\b)/i.test(n) || /\bBB\b/.test(n)) return 'block-boards'
+  if (n.includes('MDF UV') || n.includes('HDF UV')) return 'uv-gloss-boards'
+  if (/\b(21MM|48MM|\d+\s*MM)\b/.test(n)) return 'edge-tapes'
+  if (n.includes('MARINE')) return 'marine-boards'
+  if (n.includes('HDF')) return 'hdf-boards'
+  if (n.includes('MDF')) return 'mdf-boards'
+  if (n.includes('DOOR')) return 'doors'
+  if (n.includes('PU') || n.includes('STONE PANEL')) return 'pu-stone-panels'
+
+  return 'accessories'
+}
+
+function parsePrice(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined
+  const str = String(raw).replace(/[^\d.]/g, '')
+  const num = parseFloat(str)
+  return isNaN(num) ? undefined : num
+}
+
+function parseStock(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined
+  const num = parseInt(String(raw), 10)
+  return isNaN(num) ? undefined : num
+}
+
+function rowToProduct(row: Record<string, unknown>): ParsedProduct | null {
+  const lower: Record<string, unknown> = {}
+  for (const k of Object.keys(row)) {
+    lower[k.toLowerCase().trim()] = row[k]
+  }
+
+  const name = String(lower['name'] ?? '').trim()
+  if (!name) return null
+
+  const rawCategory = lower['category'] ?? lower['categoryslug'] ?? lower['category_slug'] ?? ''
+  let categorySlug: string
+
+  if (rawCategory) {
+    const raw = String(rawCategory).trim()
+    categorySlug = VALID_SLUGS.has(raw) ? raw : slugifyCategory(raw)
+  } else {
+    categorySlug = inferCategoryFromName(name)
+  }
+
+  const price = parsePrice(lower['price'] ?? lower['selling_price'] ?? lower['sellingprice'])
+  const costPrice = parsePrice(lower['cost_price'] ?? lower['costprice'] ?? lower['cost'])
+  const stock = parseStock(lower['stock'] ?? lower['qty'] ?? lower['quantity'])
+
+  const product: ParsedProduct = { name, categorySlug }
+  if (price !== undefined) product.price = price
+  if (costPrice !== undefined) product.costPrice = costPrice
+  if (stock !== undefined) product.stock = stock
+
+  return product
+}
+
+export function parseCSV(content: string): ParsedProduct[] {
+  const workbook = XLSX.read(content, { type: 'string' })
+  const sheet = workbook.Sheets[workbook.SheetNames[0]]
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+  return rows.map(rowToProduct).filter((p): p is ParsedProduct => p !== null)
+}
+
+export function parseExcel(buffer: Buffer): ParsedProduct[] {
+  const workbook = XLSX.read(buffer, { type: 'buffer' })
+  const sheet = workbook.Sheets[workbook.SheetNames[0]]
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+  return rows.map(rowToProduct).filter((p): p is ParsedProduct => p !== null)
+}
+
+const META_LINE = /^\s*(category|price|cost)[:\s]/i
+
+function isMetaLine(line: string): boolean {
+  return META_LINE.test(line)
+}
+
+function extractPriceFromSegment(segment: string): { name: string; price?: number } {
+  const priceMatch = segment.match(/\s+(?:at\s+)?(?:₦|NGN|N)\s*([\d,]+)\s*$/i)
+    ?? segment.match(/\s+([\d,]{4,})\s*$/)
+  if (priceMatch) {
+    const name = segment.slice(0, segment.length - priceMatch[0].length).trim()
+    return { name, price: parsePrice(priceMatch[1]) }
+  }
+  return { name: segment.trim() }
+}
+
+export function parseTextInput(text: string): ParsedProduct[] {
+  const results: ParsedProduct[] = []
+
+  const categoryLinePattern = /category[:\s]+([^\n,]+?)(?:\s+price[:\s]|$)/i
+  const priceLinePattern = /price[:\s]+(?:₦|NGN|N)?\s*([\d,]+)/i
+
+  const catMatch = text.match(categoryLinePattern)
+  const priceMatch = text.match(priceLinePattern)
+  const defaultCat = catMatch ? slugifyCategory(catMatch[1].trim()) : ''
+  const defaultPrice = priceMatch ? parsePrice(priceMatch[1]) : undefined
+
+  // "X, Y under category at ₦price"
+  const underPattern =
+    /(.+?)\s+under\s+([\w-]+(?:\s+[\w-]+)*)\s+at\s+(?:₦|NGN|N)?\s*([\d,]+)/gi
+  let match: RegExpExecArray | null
+  underPattern.lastIndex = 0
+  while ((match = underPattern.exec(text)) !== null) {
+    const names = match[1].split(',').map(s => s.trim()).filter(Boolean)
+    const cat = slugifyCategory(match[2].trim())
+    const price = parsePrice(match[3])
+    for (const name of names) {
+      if (!name) continue
+      const product: ParsedProduct = { name, categorySlug: cat }
+      if (price !== undefined) product.price = price
+      results.push(product)
+    }
+  }
+  if (results.length > 0) return deduplicate(results)
+
+  // "Add: Name (category) ₦price, Name2 (category2) ₦price2"
+  const addLinePattern = /^add[:\s]+(.+)/i
+  const lines = text.split('\n')
+  for (const line of lines) {
+    const addMatch = line.match(addLinePattern)
+    if (!addMatch) continue
+    const segment = addMatch[1]
+    const entries = segment.split(',')
+    for (const entry of entries) {
+      const e = entry.trim()
+      if (!e) continue
+      const catInParens = e.match(/\(([^)]+)\)/)
+      const catRaw = catInParens ? catInParens[1].trim() : ''
+      const withoutParens = e.replace(/\(([^)]+)\)/, '').trim()
+      const { name, price } = extractPriceFromSegment(withoutParens)
+      if (!name) continue
+      const cat = catRaw ? slugifyCategory(catRaw) : (defaultCat || inferCategoryFromName(name))
+      const product: ParsedProduct = { name, categorySlug: cat }
+      if (price !== undefined) product.price = price
+      results.push(product)
+    }
+  }
+  if (results.length > 0) return deduplicate(results)
+
+  // Bullet list with optional metadata footer
+  const bulletPattern = /^[-*•]\s+(.+)/gm
+  const bulletNames: string[] = []
+  bulletPattern.lastIndex = 0
+  while ((match = bulletPattern.exec(text)) !== null) {
+    bulletNames.push(match[1].trim())
+  }
+  if (bulletNames.length > 0) {
+    for (const name of bulletNames) {
+      if (!name || isMetaLine(name)) continue
+      const cat = defaultCat || inferCategoryFromName(name)
+      const product: ParsedProduct = { name, categorySlug: cat }
+      if (defaultPrice !== undefined) product.price = defaultPrice
+      results.push(product)
+    }
+    return deduplicate(results)
+  }
+
+  // Plain lines: "Name ₦price" or "Name, Name2 ₦price"
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line || isMetaLine(line)) continue
+    if (/^(add|under|at)[:\s]/i.test(line)) continue
+
+    const entries = line.split(',')
+    for (const entry of entries) {
+      const e = entry.trim()
+      if (e.length < 2) continue
+      const catInParens = e.match(/\(([^)]+)\)/)
+      const catRaw = catInParens ? catInParens[1].trim() : ''
+      const withoutParens = e.replace(/\(([^)]+)\)/, '').trim()
+      const { name, price } = extractPriceFromSegment(withoutParens)
+      if (!name || name.length < 2) continue
+      const cat = catRaw ? slugifyCategory(catRaw) : (defaultCat || inferCategoryFromName(name))
+      const product: ParsedProduct = { name, categorySlug: cat }
+      const resolvedPrice = price ?? defaultPrice
+      if (resolvedPrice !== undefined) product.price = resolvedPrice
+      results.push(product)
+    }
+  }
+
+  return deduplicate(results)
+}
+
+function deduplicate(products: ParsedProduct[]): ParsedProduct[] {
+  const seen = new Set<string>()
+  return products.filter(p => {
+    const key = `${p.name}|${p.categorySlug}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}

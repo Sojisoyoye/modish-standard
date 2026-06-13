@@ -1,0 +1,65 @@
+# Modish Standard — Product Management Telegram Bot
+#
+# USAGE OPTIONS:
+#
+# Option A — Run standalone (development / testing):
+#   docker compose -f docker-compose.bot.yml up -d
+#   (creates its own bridge network automatically)
+#
+# Option B — Merge into the existing Hetzner stack:
+#   Copy the 'product-bot' service block below into
+#   /opt/modish/docker-compose.yml, then run:
+#     docker compose up -d product-bot
+#   The service will join the existing 'modish' network and can
+#   reach n8n, cliproxy, etc. by container name.
+#
+# NOTE: This bot uses a SEPARATE Telegram bot token from the one
+# used by n8n workflows. Create a new bot via @BotFather to avoid
+# conflicts with existing automations.
+
+version: '3.8'
+
+services:
+  product-bot:
+    # --- Build from local Dockerfile (development) ---
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+
+    # --- OR pull a pre-built image from a registry (production) ---
+    # Uncomment the line below and comment out the 'build' block above
+    # to use a pushed image instead of building on the server.
+    # image: ghcr.io/sojisoyoye/modish-standard/product-bot:latest
+
+    container_name: product-bot
+    restart: unless-stopped
+
+    env_file:
+      - .env.bot
+
+    networks:
+      - modish
+
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+# ---------------------------------------------------------------------------
+# Network configuration
+#
+# When running STANDALONE (Option A):
+#   The 'modish' network is declared here as a local bridge so the compose
+#   file is self-contained. The bot makes only outbound connections
+#   (Telegram long-poll, POS API, Sanity API) so no ports need to be
+#   exposed and no Caddy entry is required.
+#
+# When MERGING into /opt/modish/docker-compose.yml (Option B):
+#   Remove this 'networks' section entirely — the existing stack already
+#   declares the 'modish' network. The service block above references it
+#   and Docker Compose will attach the container automatically.
+# ---------------------------------------------------------------------------
+networks:
+  modish:
+    driver: bridge
