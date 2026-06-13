@@ -13,13 +13,15 @@ E-commerce website for **Modish Standard** — a Lagos-based supplier of MDF/HDF
 
 | Layer | Technology |
 |-------|-----------|
-| Framework | Next.js 16 (App Router) |
-| CMS | Sanity v3 |
-| Styling | Tailwind CSS v4 |
+| Framework | Next.js 14 (App Router) |
+| CMS | Sanity v3 (embedded studio at `/studio`) |
+| Images | Cloudinary (CDN + transformations) |
+| Styling | Tailwind CSS |
 | Language | TypeScript |
 | Hosting | Vercel |
 | CI/CD | GitHub Actions |
 | Testing | Jest + React Testing Library |
+| Bot | Telegram bot (Node.js, deployed on Hetzner) |
 
 ---
 
@@ -59,12 +61,17 @@ npm run sanity:dev           # Sanity Studio at http://localhost:3333
 Copy `.env.example` to `.env.local` and fill in:
 
 ```bash
-NEXT_PUBLIC_SANITY_PROJECT_ID=   # from sanity.io/manage
+NEXT_PUBLIC_SANITY_PROJECT_ID=        # from sanity.io/manage
 NEXT_PUBLIC_SANITY_DATASET=production
-SANITY_API_TOKEN=                # Editor role token
-NEXT_PUBLIC_WHATSAPP_NUMBER=     # e.g. 2348012345678
+SANITY_API_TOKEN=                     # Editor role token
+NEXT_PUBLIC_WHATSAPP_NUMBER=          # e.g. 2348012345678
 NEXT_PUBLIC_SITE_URL=https://www.modishstandard.com
-NEXT_PUBLIC_GA_MEASUREMENT_ID=   # optional, add after launch
+NEXT_PUBLIC_GA_MEASUREMENT_ID=        # optional, add after launch
+
+# Cloudinary — product images
+NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME=    # from cloudinary.com dashboard
+CLOUDINARY_API_KEY=                   # for bot uploads (server-side only)
+CLOUDINARY_API_SECRET=                # for bot uploads (server-side only)
 ```
 
 ---
@@ -97,6 +104,28 @@ npm run docker:prod      # run via Docker (production)
 
 **Product categories:** MDF Boards · HDF Boards · UV Gloss Boards · Marine Boards · Edge Tapes · Doors · PU Stone Panels
 
+**Product images** are stored in Cloudinary under `modish/products/{slug}` and referenced in Sanity as `{ publicId, alt }` objects. The website reads the `publicId` and constructs Cloudinary transformation URLs at render time — no images are stored in Sanity.
+
+---
+
+## Telegram Bot
+
+A management bot (`scripts/telegram-bot.ts`) runs on Hetzner and handles:
+
+| Command | Purpose |
+|---------|---------|
+| `/add` | Add products to POS via text or CSV/Excel file |
+| `/sync [category]` | Push POS → Sanity website |
+| `/syncstock` | Trigger n8n Workflow J (stock → Airtable → content) |
+| `/image <slug>` | Upload a product photo → Cloudinary → Sanity |
+| `/setimage <slug> <public-id>` | Link an existing Cloudinary image to a product |
+| `/matchimages` | Auto-match Cloudinary assets to products by slug |
+| `/find <name>` | Search POS, get SKU + edit link |
+| `/list [category]` | Browse POS products |
+| `/status` | Check POS + Sanity connections |
+
+See [DEPLOY-BOT.md](./DEPLOY-BOT.md) for full setup and deployment instructions.
+
 ---
 
 ## Deployment
@@ -118,4 +147,5 @@ Set in **GitHub → Settings → Secrets and variables → Actions**:
 | `NEXT_PUBLIC_SANITY_PROJECT_ID` | sanity.io/manage |
 | `SANITY_API_TOKEN` | sanity.io/manage → API → Tokens (Editor role) |
 | `NEXT_PUBLIC_WHATSAPP_NUMBER` | `234XXXXXXXXXX` format |
+| `NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME` | cloudinary.com dashboard |
 

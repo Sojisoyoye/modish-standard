@@ -41,6 +41,15 @@ SANITY_API_TOKEN=your-sanity-write-token
 
 # WhatsApp (used in product inquiry links)
 NEXT_PUBLIC_WHATSAPP_NUMBER=2348012345678
+
+# Cloudinary (used by /image, /setimage, /matchimages)
+CLOUDINARY_CLOUD_NAME=dkporys8h
+CLOUDINARY_API_KEY=your-cloudinary-api-key
+CLOUDINARY_API_SECRET=your-cloudinary-api-secret
+
+# n8n integration
+N8N_STOCKSYNC_WEBHOOK_URL=https://n8n.modishstandard.com/webhook/pos-stock-sync
+POS_API_KEY=modish-pos-api-2024
 EOF
 ```
 
@@ -221,32 +230,33 @@ docker compose -f docker-compose.bot.yml logs -f product-bot
 
 ## Updating the bot after code changes
 
-After pushing changes to GitHub:
-
-### Option A (added to /opt/modish stack)
+The bot scripts live in `/opt/modish/scripts/` on the server. The fastest way to deploy is to SCP the changed files directly, then rebuild:
 
 ```bash
-ssh root@178.104.122.53
-cd /root/modish-standard
-git pull origin main
+# From your local modish-standard repo root:
 
-cd /opt/modish
-docker compose build product-bot
-docker compose up -d product-bot
-docker compose logs -f product-bot
+# 1. Copy changed scripts
+scp -i ~/.ssh/hetzner_modish \
+  scripts/telegram-bot.ts \
+  scripts/pos-client.ts \
+  scripts/parse-product-doc.ts \
+  root@178.104.122.53:/opt/modish/scripts/
+
+# 2. If you added/updated npm dependencies, copy package files too
+scp -i ~/.ssh/hetzner_modish \
+  package.json package-lock.json \
+  root@178.104.122.53:/opt/modish/
+
+# 3. Rebuild and restart (use docker-compose, not docker compose, on this server)
+ssh -i ~/.ssh/hetzner_modish root@178.104.122.53 \
+  "cd /opt/modish && docker-compose build product-bot && docker-compose up -d product-bot"
+
+# 4. Verify
+ssh -i ~/.ssh/hetzner_modish root@178.104.122.53 \
+  "docker logs product-bot --tail 15"
 ```
 
-### Option B (standalone)
-
-```bash
-ssh root@178.104.122.53
-cd /root/modish-standard
-git pull origin main
-
-docker compose -f docker-compose.bot.yml build product-bot
-docker compose -f docker-compose.bot.yml up -d product-bot
-docker compose -f docker-compose.bot.yml logs -f product-bot
-```
+> **Note:** This server uses `docker-compose` (hyphenated v2), not `docker compose`.
 
 The `up -d` command recreates the container only if the image changed, so it is safe to run every time.
 
@@ -277,6 +287,8 @@ Common causes:
 | POS login failed | Wrong credentials or POS URL | Verify `INVENTORY_APP_*` vars in `.env.bot` |
 | `Insufficient permissions; permission 'create' required` | Sanity token has Write role but not Editor | Generate a new token with the **Editor** role at sanity.io → project → API → Tokens, update `SANITY_API_TOKEN` in `/opt/modish/.env.bot`, restart bot |
 | Other Sanity errors | Wrong project ID, dataset, or token | Verify `NEXT_PUBLIC_SANITY_PROJECT_ID`, `NEXT_PUBLIC_SANITY_DATASET`, and `SANITY_API_TOKEN` in `.env.bot` |
+| `/image` — `Cloudinary upload failed` | Wrong API key or secret | Check `CLOUDINARY_API_KEY` and `CLOUDINARY_API_SECRET` in `.env.bot` against cloudinary.com → Settings → API Keys |
+| `/matchimages` — `Cloudinary API error` | Admin API disabled or wrong credentials | Same as above; ensure the API key has Admin API access enabled |
 
 ### Container keeps restarting
 
@@ -334,8 +346,11 @@ docker compose up -d product-bot   # recreates the container with fresh env
 | `/syncstock` | Trigger n8n Workflow J on demand: pulls POS stock → updates Airtable Product Catalog → kicks off content generation workflows (new products → promo content, restocked → back-in-stock content). |
 | `/list` | List up to 30 active products from POS. |
 | `/list <category>` | List products filtered to one category. |
+| `/image <slug-or-sku>` | Two-step image upload: bot looks up the product, asks you to send a photo, uploads it to Cloudinary as `modish/products/{slug}`, then patches Sanity. |
+| `/setimage <slug> <public-id>` | Directly link an existing Cloudinary image to a product. Useful for backfilling images already uploaded to Cloudinary before this system was built. Example: `/setimage wenge-bb-board modish/products/wenge-bb` |
+| `/matchimages` | Auto-match: fetches all assets under `modish/products/` in Cloudinary, matches by slug, writes matches to Sanity, and reports any products still without images. |
 | `/status` | Check POS login + Sanity connection, shows product counts. |
-| `/cancel` | Cancel the current multi-step flow (add, etc.). |
+| `/cancel` | Cancel the current multi-step flow (add, image, etc.). |
 
 **Valid category slugs** (used with `/sync` and `/list`):
 
