@@ -18,6 +18,9 @@
  *   NEXT_PUBLIC_SANITY_DATASET
  *   SANITY_API_TOKEN
  *   POS_API_KEY                   (Bearer token for the HTTP API server on :3001)
+ *   CLOUDINARY_CLOUD_NAME         (or NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME)
+ *   CLOUDINARY_API_KEY
+ *   CLOUDINARY_API_SECRET
  */
 
 import * as dotenv from 'dotenv'
@@ -27,6 +30,7 @@ dotenv.config({ path: '.env' })
 import * as http from 'node:http'
 import { Telegraf, session, Markup, Context } from 'telegraf'
 import { createClient } from 'next-sanity'
+import { v2 as cloudinary } from 'cloudinary'
 import { POSClient, createPOSClientFromEnv, type POSProduct } from './pos-client'
 import {
   parseCSV,
@@ -45,6 +49,27 @@ const sanity = createClient({
   token: process.env.SANITY_API_TOKEN,
 })
 
+// ── Cloudinary client ─────────────────────────────────────────────────────────
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+})
+
+async function cloudinaryUploadBuffer(buffer: Buffer, publicId: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { public_id: publicId, overwrite: true, invalidate: true },
+      (err, result) => {
+        if (err || !result) return reject(err ?? new Error('No upload result'))
+        resolve(result.secure_url)
+      }
+    )
+    stream.end(buffer)
+  })
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 const AUTHORIZED_IDS: Set<number> = new Set(
@@ -62,9 +87,11 @@ function isAuthorized(userId: number | undefined): boolean {
 // ── Session types ─────────────────────────────────────────────────────────────
 
 interface SessionData {
-  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create'
+  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo'
   pendingCreate?: ParsedProduct[]
   pendingCategories?: string[]
+  pendingImageSlug?: string
+  pendingImageProductName?: string
 }
 
 interface BotContext extends Context {
@@ -405,6 +432,9 @@ bot.command('start', async ctx => {
     `/sync [category] — Push POS → Sanity website (omit category to sync all)\n` +
     `/syncstock — Sync stock to Airtable and trigger content generation (Instagram/WhatsApp)\n` +
     `/list [category] — Browse products currently in POS\n` +
+    `/image <slug> — Upload a photo to Cloudinary and attach it to a product\n` +
+    `/setimage <slug> <public-id> — Link an existing Cloudinary image to a product\n` +
+    `/matchimages — Auto-match Cloudinary assets to products by slug\n` +
     `/status — Check POS + Sanity connections\n` +
     `/cancel — Cancel the current operation\n\n` +
     `*Category slugs* (for /sync and /list):\n` +
@@ -610,6 +640,172 @@ bot.command('sync', async ctx => {
   }
 })
 
+// ── /image ────────────────────────────────────────────────────────────────────
+
+bot.command('image', async ctx => {
+  const arg = ctx.message.text.split(/\s+/).slice(1).join(' ').trim()
+
+  if (!arg) {
+    await ctx.reply(
+      'Usage: `/image <slug-or-sku>`\nExample: `/image wenge-bb-board`',
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  await ctx.reply('🔍 Looking up product…')
+
+  let product: { name: string; slug: { current: string } } | null = null
+  try {
+    product = await sanity.fetch(
+      `*[_type == "product" && (slug.current == $q || sku == $q)][0]{ name, slug }`,
+      { q: arg }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity lookup failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (!product) {
+    await ctx.reply(`❌ No product found with slug or SKU \`${arg}\`.`, { parse_mode: 'Markdown' })
+    return
+  }
+
+  ctx.session.step = 'await_image_photo'
+  ctx.session.pendingImageSlug = product.slug.current
+  ctx.session.pendingImageProductName = product.name
+
+  await ctx.reply(
+    `✅ Found *${product.name}*\n\nNow send the photo (send as a photo, not a file).`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+// ── /setimage ─────────────────────────────────────────────────────────────────
+
+bot.command('setimage', async ctx => {
+  const parts = ctx.message.text.split(/\s+/).slice(1)
+  const slug = parts[0]?.trim()
+  const publicId = parts.slice(1).join(' ').trim()
+
+  if (!slug || !publicId) {
+    await ctx.reply(
+      'Usage: `/setimage <slug> <cloudinary-public-id>`\nExample: `/setimage wenge-bb-board modish/products/wenge-bb`',
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  await ctx.reply('🔍 Looking up product…')
+
+  let product: { _id: string; name: string } | null = null
+  try {
+    product = await sanity.fetch(
+      `*[_type == "product" && slug.current == $slug][0]{ _id, name }`,
+      { slug }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity lookup failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (!product) {
+    await ctx.reply(`❌ No product found with slug \`${slug}\`.`, { parse_mode: 'Markdown' })
+    return
+  }
+
+  try {
+    await sanity
+      .patch(product._id)
+      .set({ images: [{ publicId, alt: product.name }] })
+      .commit()
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity patch failed: ${err.message ?? err}`)
+    return
+  }
+
+  const previewUrl = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME}/image/upload/f_auto,q_auto,w_400/${publicId}`
+  await ctx.reply(
+    `✅ *${product.name}* updated!\n\nCloudinary ID: \`${publicId}\`\nPreview: ${previewUrl}`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+// ── /matchimages ──────────────────────────────────────────────────────────────
+
+bot.command('matchimages', async ctx => {
+  await ctx.reply('🔍 Fetching Cloudinary assets and Sanity products…')
+
+  let cloudinaryAssets: Array<{ public_id: string }>
+  try {
+    const result = await cloudinary.api.resources({
+      type: 'upload',
+      prefix: 'modish/products/',
+      max_results: 500,
+    })
+    cloudinaryAssets = result.resources
+  } catch (err: any) {
+    await ctx.reply(`❌ Cloudinary API error: ${err.message ?? err}`)
+    return
+  }
+
+  let sanityProducts: Array<{ _id: string; name: string; slug: string; hasImage: boolean }>
+  try {
+    sanityProducts = await sanity.fetch(
+      `*[_type == "product"]{ _id, name, "slug": slug.current, "hasImage": defined(images[0].publicId) }`
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity fetch failed: ${err.message ?? err}`)
+    return
+  }
+
+  const withoutImage = sanityProducts.filter(p => !p.hasImage)
+
+  if (cloudinaryAssets.length === 0) {
+    await ctx.reply('No Cloudinary assets found under `modish/products/`.', { parse_mode: 'Markdown' })
+    return
+  }
+
+  await ctx.reply(`Found ${cloudinaryAssets.length} Cloudinary asset(s). Matching against ${withoutImage.length} product(s) without images…`)
+
+  const matched: string[] = []
+  const unmatched: string[] = []
+
+  for (const asset of cloudinaryAssets) {
+    const assetSlug = asset.public_id.replace(/^modish\/products\//, '').replace(/\.[^.]+$/, '')
+    const product = withoutImage.find(p => p.slug === assetSlug)
+
+    if (product) {
+      try {
+        await sanity
+          .patch(product._id)
+          .set({ images: [{ publicId: asset.public_id, alt: product.name }] })
+          .commit()
+        matched.push(`✅ ${product.name} ← \`${asset.public_id}\``)
+      } catch {
+        matched.push(`⚠️ ${product.name}: patch failed`)
+      }
+    } else {
+      unmatched.push(`• \`${asset.public_id}\` (no slug match)`)
+    }
+  }
+
+  let msg = `*Image match complete*\n\n`
+  if (matched.length > 0) {
+    msg += `*Matched (${matched.length}):*\n${matched.join('\n')}\n\n`
+  }
+  if (unmatched.length > 0) {
+    msg += `*Unmatched assets (${unmatched.length}):*\n${unmatched.join('\n')}\n\n`
+  }
+  const stillMissing = withoutImage.filter(p => !matched.some(m => m.includes(p.name)))
+  if (stillMissing.length > 0) {
+    msg += `*Products still without images (${stillMissing.length}):*\n`
+    msg += stillMissing.map(p => `• \`${p.slug}\``).join('\n')
+  }
+
+  await sendLong(ctx, msg)
+})
+
 // ── /add ──────────────────────────────────────────────────────────────────────
 
 bot.command('add', async ctx => {
@@ -759,6 +955,64 @@ bot.on('text', async ctx => {
       "I didn't understand that. Use /start to see available commands, or /add to add products."
     )
   }
+})
+
+// ── Photo handler (/image flow) ───────────────────────────────────────────────
+
+bot.on('photo', async ctx => {
+  if (ctx.session.step !== 'await_image_photo') {
+    await ctx.reply("Send /image <slug> first to assign a photo to a product.")
+    return
+  }
+
+  const slug = ctx.session.pendingImageSlug!
+  const productName = ctx.session.pendingImageProductName!
+  ctx.session = {}
+
+  await ctx.reply('📤 Uploading to Cloudinary…')
+
+  // Largest photo is last in the array
+  const photo = ctx.message.photo[ctx.message.photo.length - 1]
+
+  let fileBuffer: Buffer
+  try {
+    const fileLink = await ctx.telegram.getFileLink(photo.file_id)
+    const response = await fetch(fileLink.href)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    fileBuffer = Buffer.from(await response.arrayBuffer())
+  } catch (err: any) {
+    await ctx.reply(`❌ Failed to download photo: ${err.message ?? err}`)
+    return
+  }
+
+  const publicId = `modish/products/${slug}`
+  let secureUrl: string
+  try {
+    secureUrl = await cloudinaryUploadBuffer(fileBuffer, publicId)
+  } catch (err: any) {
+    await ctx.reply(`❌ Cloudinary upload failed: ${err.message ?? err}`)
+    return
+  }
+
+  try {
+    const product = await sanity.fetch<{ _id: string } | null>(
+      `*[_type == "product" && slug.current == $slug][0]{ _id }`,
+      { slug }
+    )
+    if (!product) throw new Error(`Product with slug "${slug}" not found`)
+    await sanity
+      .patch(product._id)
+      .set({ images: [{ publicId, alt: productName }] })
+      .commit()
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity patch failed: ${err.message ?? err}\n\nImage is uploaded at: ${secureUrl}`)
+    return
+  }
+
+  await ctx.reply(
+    `✅ *${productName}* image updated!\n\nCloudinary ID: \`${publicId}\`\n${secureUrl}`,
+    { parse_mode: 'Markdown' }
+  )
 })
 
 // ── Document (file) handler ───────────────────────────────────────────────────
