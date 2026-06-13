@@ -2,10 +2,10 @@
 
 import { useState, useCallback, useEffect } from "react";
 import Image from "next/image";
-import { urlFor } from "@/lib/sanity/client";
+import { cloudinaryLoader, cloudinaryUrl } from "@/lib/cloudinary";
 
 interface GalleryImage {
-  asset: { _ref: string };
+  publicId: string;
   alt?: string;
 }
 
@@ -64,7 +64,7 @@ export default function ProductGallery({ images }: ProductGalleryProps) {
   }
 
   const activeImage = images[activeIndex];
-  const mainImageUrl = urlFor(activeImage).width(800).height(800).url();
+  const mainImageUrl = cloudinaryUrl(activeImage.publicId, 'f_auto,q_auto,w_800,h_800,c_fill');
 
   return (
     <>
@@ -76,7 +76,8 @@ export default function ProductGallery({ images }: ProductGalleryProps) {
           aria-label="Open image in lightbox"
         >
           <Image
-            src={mainImageUrl}
+            loader={cloudinaryLoader}
+            src={activeImage.publicId}
             alt={activeImage.alt || "Product image"}
             fill
             className="object-cover"
@@ -88,29 +89,27 @@ export default function ProductGallery({ images }: ProductGalleryProps) {
         {/* Thumbnail Strip */}
         {images.length > 1 && (
           <div className="flex gap-2 overflow-x-auto pb-2">
-            {images.map((image, index) => {
-              const thumbUrl = urlFor(image).width(120).height(120).url();
-              return (
-                <button
-                  key={index}
-                  onClick={() => setActiveIndex(index)}
-                  className={`relative shrink-0 h-16 w-16 sm:h-20 sm:w-20 rounded-xl overflow-hidden border-2 transition-colors ${
-                    index === activeIndex
-                      ? "border-[#1B2D72]"
-                      : "border-transparent hover:border-gray-300"
-                  }`}
-                  aria-label={`View image ${index + 1}`}
-                >
-                  <Image
-                    src={thumbUrl}
-                    alt={image.alt || `Product image ${index + 1}`}
-                    fill
-                    className="object-cover"
-                    sizes="80px"
-                  />
-                </button>
-              );
-            })}
+            {images.map((image, index) => (
+              <button
+                key={index}
+                onClick={() => setActiveIndex(index)}
+                className={`relative shrink-0 h-16 w-16 sm:h-20 sm:w-20 rounded-xl overflow-hidden border-2 transition-colors ${
+                  index === activeIndex
+                    ? "border-[#1B2D72]"
+                    : "border-transparent hover:border-gray-300"
+                }`}
+                aria-label={`View image ${index + 1}`}
+              >
+                <Image
+                  loader={cloudinaryLoader}
+                  src={image.publicId}
+                  alt={image.alt || `Product image ${index + 1}`}
+                  fill
+                  className="object-cover"
+                  sizes="80px"
+                />
+              </button>
+            ))}
           </div>
         )}
       </div>
@@ -154,7 +153,8 @@ export default function ProductGallery({ images }: ProductGalleryProps) {
             onClick={(e) => e.stopPropagation()}
           >
             <Image
-              src={urlFor(images[activeIndex]).width(1200).height(1200).url()}
+              loader={cloudinaryLoader}
+              src={images[activeIndex].publicId}
               alt={images[activeIndex].alt || "Product image"}
               fill
               className="object-contain"

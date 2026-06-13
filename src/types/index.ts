@@ -17,7 +17,7 @@ export interface Product {
   materialType: string
   colorFinish: string
   stockStatus: 'in_stock' | 'out_of_stock' | 'on_request'
-  images: SanityImage[]
+  images: CloudinaryImage[]
   isFeatured: boolean
   metaTitle?: string
   metaDescription?: string
@@ -50,6 +50,11 @@ export interface ShowroomInfo {
     sunday: string
   }
   gallery: SanityImage[]
+}
+
+export interface CloudinaryImage {
+  publicId: string
+  alt?: string
 }
 
 export interface SanityImage {

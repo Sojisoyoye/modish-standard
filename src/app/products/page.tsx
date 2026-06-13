@@ -22,13 +22,13 @@ interface ProductListItem {
   price?: number;
   stockStatus: string;
   category?: { name: string; slug: { current: string } };
-  image?: { asset: { _ref: string }; alt?: string };
+  image?: { publicId?: string; alt?: string };
 }
 
 const SIMPLE_ALL_PRODUCTS = `*[_type == "product"] | order(_createdAt desc) {
   _id, name, slug, shortDescription, price, stockStatus,
   "category": category->{ name, slug },
-  "image": images[0]{ asset, alt }
+  "image": images[0]{ publicId, alt }
 }`;
 
 async function getProductsData() {

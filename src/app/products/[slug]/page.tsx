@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { sanityFetch, urlFor } from "@/lib/sanity/client";
+import { sanityFetch } from "@/lib/sanity/client";
+import { cloudinaryUrl } from "@/lib/cloudinary";
 import { PRODUCT_DETAIL_QUERY } from "@/lib/sanity/queries";
 import { formatNGN } from "@/lib/utils";
 import ProductGallery from "@/components/products/ProductGallery";
@@ -32,14 +33,14 @@ interface ProductDetail {
   metaTitle?: string;
   metaDescription?: string;
   category?: { name: string; slug: { current: string } };
-  images?: Array<{ asset: { _ref: string }; alt?: string }>;
+  images?: Array<{ publicId: string; alt?: string }>;
   related?: Array<{
     _id: string;
     name: string;
     slug: { current: string };
     price?: number;
     stockStatus: string;
-    image?: { asset: { _ref: string }; alt?: string };
+    image?: { publicId?: string; alt?: string };
   }>;
 }
 
@@ -62,8 +63,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return { title: "Product Not Found | Modish Standard" };
   }
 
-  const ogImage = product.images?.[0]
-    ? urlFor(product.images[0]).width(1200).height(630).url()
+  const ogImage = product.images?.[0]?.publicId
+    ? cloudinaryUrl(product.images[0].publicId, 'f_auto,q_auto,w_1200,h_630,c_fill')
     : undefined;
 
   return {
@@ -120,7 +121,7 @@ export default async function ProductDetailPage({ params }: Props) {
     "@type": "Product",
     name: product.name,
     description: product.shortDescription,
-    image: product.images?.map((img) => urlFor(img).width(800).url()),
+    image: product.images?.map((img) => cloudinaryUrl(img.publicId, 'f_auto,q_auto,w_800')),
     brand: { "@type": "Brand", name: "Modish Standard" },
     ...(product.price && {
       offers: {

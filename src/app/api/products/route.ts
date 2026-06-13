@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
       colorFinish,
       dimensions,
       "category": category->{ _id, name, slug },
-      "image": images[0]{ asset, alt }
+      "image": images[0]{ publicId, alt }
     }`;
 
     const params: Record<string, string> = {};

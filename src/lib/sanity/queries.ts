@@ -6,7 +6,7 @@ export const FEATURED_PRODUCTS_QUERY = `*[_type == "product" && isFeatured == tr
   price,
   currency,
   stockStatus,
-  "image": images[0]{ asset, alt },
+  "image": images[0]{ publicId, alt },
   isFeatured,
   "category": category->{
     _id,
@@ -23,7 +23,7 @@ export const PRODUCTS_BY_CATEGORY_QUERY = `*[_type == "product" && !(_id match "
   price,
   currency,
   stockStatus,
-  "image": images[0]{ asset, alt },
+  "image": images[0]{ publicId, alt },
   isFeatured,
   materialType,
   colorFinish,
@@ -44,7 +44,7 @@ export const PRODUCT_DETAIL_QUERY = `*[_type == "product" && slug.current == $sl
   price,
   currency,
   stockStatus,
-  images[]{ asset, alt },
+  images[]{ publicId, alt },
   isFeatured,
   materialType,
   colorFinish,
@@ -59,7 +59,7 @@ export const PRODUCT_DETAIL_QUERY = `*[_type == "product" && slug.current == $sl
   },
   "related": *[_type == "product" && category._ref == ^.category._ref && slug.current != $slug][0...4] {
     _id, name, slug, price, stockStatus,
-    "image": images[0]{ asset, alt }
+    "image": images[0]{ publicId, alt }
   }
 }`
 
@@ -93,7 +93,7 @@ export const ALL_PRODUCTS_QUERY = `*[_type == "product"
   price,
   currency,
   stockStatus,
-  "image": images[0]{ asset, alt },
+  "image": images[0]{ publicId, alt },
   isFeatured,
   materialType,
   colorFinish,
@@ -119,7 +119,7 @@ export const SEARCH_PRODUCTS_QUERY = `*[_type == "product" && !(_id match "produ
   price,
   currency,
   stockStatus,
-  "image": images[0]{ asset, alt },
+  "image": images[0]{ publicId, alt },
   isFeatured,
   materialType,
   "category": category->{

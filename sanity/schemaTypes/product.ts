@@ -137,19 +137,21 @@ export default defineType({
       type: 'array',
       of: [
         {
-          type: 'image',
-          options: { hotspot: true },
+          type: 'object',
           fields: [
+            defineField({
+              name: 'publicId',
+              title: 'Cloudinary Public ID',
+              type: 'string',
+            }),
             defineField({
               name: 'alt',
               title: 'Alt Text',
               type: 'string',
-              validation: (rule) => rule.required(),
             }),
           ],
         },
       ],
-      validation: (rule) => rule.required().min(1),
     }),
     defineField({
       name: 'isFeatured',
@@ -177,7 +179,6 @@ export default defineType({
     select: {
       title: 'name',
       subtitle: 'category.name',
-      media: 'images.0',
     },
   },
 })

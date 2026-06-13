@@ -1,6 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
-import { urlFor } from "@/lib/sanity/client";
+import { cloudinaryUrl } from "@/lib/cloudinary";
 import { formatNGN } from "@/lib/utils";
 import { buildWhatsAppUrl } from "@/lib/whatsapp";
 import Badge from "@/components/ui/Badge";
@@ -15,7 +15,7 @@ interface ProductCardProduct {
   price?: number;
   stockStatus: string;
   category?: { name: string; slug: { current: string } };
-  image?: { asset: { _ref: string }; alt?: string };
+  image?: { publicId?: string; alt?: string };
 }
 
 interface ProductCardProps {
@@ -23,8 +23,8 @@ interface ProductCardProps {
 }
 
 export default function ProductCard({ product }: ProductCardProps) {
-  const imageUrl = product.image
-    ? urlFor(product.image).width(400).height(300).url()
+  const imageUrl = product.image?.publicId
+    ? cloudinaryUrl(product.image.publicId, 'f_auto,q_auto,w_400,h_300,c_fill')
     : null;
   const isOutOfStock = product.stockStatus === "out_of_stock";
 

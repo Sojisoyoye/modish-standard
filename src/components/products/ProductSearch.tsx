@@ -11,7 +11,7 @@ interface Product {
   price?: number;
   stockStatus: string;
   category?: { name: string; slug: { current: string } };
-  image?: { asset: { _ref: string }; alt?: string };
+  image?: { publicId?: string; alt?: string };
 }
 
 interface Props {
