@@ -495,8 +495,9 @@ bot.command('start', async ctx => {
     `/addsanity <name> — Add a product directly to the website catalog\n` +
     `/addcategory <name> — Create a new product category\n\n` +
     `*— Content & promo:*\n` +
-    `/promote <slug> — Mark a product Ready for Promo → Workflow A generates content\n` +
-    `/promotecategory <slug> [type] — Mark all products in a category (types: New Product · Promo · Campaign)\n\n` +
+    `/promote <slug> — Mark one product ready → Workflow A generates a single-product post\n` +
+    `/promotecategory <slug> [type] — Mark whole category ready (types: New Product · Promo · Restock Alert)\n` +
+    `/campaign <tag> <category-slug> — Set Campaign Tag + trigger Workflow H multi-product campaign\n\n` +
     `*— Images:*\n` +
     `/image <slug> — Upload a photo → Cloudinary → attach to product\n` +
     `/setimage <slug> <public-id> — Link an existing Cloudinary image\n` +
@@ -956,12 +957,13 @@ bot.command('promotecategory', async ctx => {
   const categorySlug = args[0]?.trim()
   const contentType = args[1]?.trim() || 'Promo'
 
-  const validTypes = ['New Product', 'Promo', 'Campaign', 'Restock Alert']
+  // Campaign is handled by Workflow H (/campaign command) — not valid here
+  const validTypes = ['New Product', 'Promo', 'Restock Alert']
   const resolvedType = validTypes.find(t => t.toLowerCase() === contentType.toLowerCase()) ?? 'Promo'
 
   if (!categorySlug) {
     await ctx.reply(
-      'Usage: `/promotecategory <category-slug> [content-type]`\n\nExamples:\n`/promotecategory uv-gloss-boards`\n`/promotecategory uv-gloss-boards Campaign`\n\nContent types: `New Product` · `Promo` · `Campaign` · `Restock Alert`',
+      'Usage: `/promotecategory <category-slug> [content-type]`\n\nExamples:\n`/promotecategory uv-gloss-boards`\n`/promotecategory uv-gloss-boards New Product`\n\nContent types: `New Product` · `Promo` · `Restock Alert`\n\n_For multi-product campaigns use /campaign instead._',
       { parse_mode: 'Markdown' }
     )
     return
@@ -1015,6 +1017,104 @@ bot.command('promotecategory', async ctx => {
 
   await ctx.reply(
     `✅ *${records.length} ${category.name} product(s)* marked Ready for Promo (${resolvedType})!\n\nWorkflow A will process them within the next 30 minutes.`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+// ── /campaign ─────────────────────────────────────────────────────────────────
+
+bot.command('campaign', async ctx => {
+  const args = ctx.message.text.split(/\s+/).slice(1)
+  // Last arg is always the category slug; everything before it is the campaign tag
+  const categorySlug = args[args.length - 1]?.trim()
+  const campaignTag = args.slice(0, -1).join(' ').trim()
+
+  if (!campaignTag || !categorySlug || args.length < 2) {
+    await ctx.reply(
+      'Usage: `/campaign <Campaign Tag> <category-slug>`\n\nExample:\n`/campaign UV Gloss June Sale uv-gloss-boards`\n\nThe campaign tag groups all products together into one multi-product post.\nWorkflow H generates a single campaign caption covering all products in the category.',
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  // Resolve category name from Sanity
+  let category: { name: string } | null = null
+  try {
+    category = await sanity.fetch(
+      `*[_type == "category" && slug.current == $slug][0]{ name }`,
+      { slug: categorySlug }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity lookup failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (!category) {
+    await ctx.reply(`❌ No category found with slug \`${categorySlug}\`.`, { parse_mode: 'Markdown' })
+    return
+  }
+
+  await ctx.reply(`🔍 Finding all *${category.name}* products in Airtable…`, { parse_mode: 'Markdown' })
+
+  let records: Array<{ id: string; fields: Record<string, unknown> }>
+  try {
+    records = await airtableSearch(`{Category}="${category.name.replace(/"/g, '\\"')}"`)
+  } catch (err: any) {
+    await ctx.reply(`❌ Airtable search failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (records.length === 0) {
+    await ctx.reply(
+      `⚠️ No *${category.name}* products found in Airtable.\n\nRun /sync ${categorySlug} first to push them from POS, then try again.`,
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  await ctx.reply(`Found ${records.length} product(s). Setting Campaign Tag to *"${campaignTag}"*…`, { parse_mode: 'Markdown' })
+
+  // Set Campaign Tag + reset Campaign Generated so Workflow H picks them up
+  try {
+    await airtablePatchRecords(
+      records.map(r => ({
+        id: r.id,
+        fields: { 'Campaign Tag': campaignTag, 'Campaign Generated': false },
+      }))
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Airtable patch failed: ${err.message ?? err}`)
+    return
+  }
+
+  // Trigger Workflow H via webhook
+  const webhookUrl = process.env.N8N_CAMPAIGN_WEBHOOK_URL
+  let webhookOk = false
+  if (webhookUrl) {
+    try {
+      const res = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.N8N_WEBHOOK_SECRET
+            ? { 'x-webhook-secret': process.env.N8N_WEBHOOK_SECRET }
+            : {}),
+        },
+        body: JSON.stringify({ campaignTag, category: category.name }),
+      })
+      webhookOk = res.ok
+    } catch (err: any) {
+      console.error('[Campaign webhook] error:', err.message ?? err)
+    }
+  }
+
+  await ctx.reply(
+    `✅ *Campaign set: "${campaignTag}"*\n\n` +
+    `*Category:* ${category.name}\n` +
+    `*Products tagged:* ${records.length}\n\n` +
+    (webhookOk
+      ? `🚀 Workflow H triggered — campaign content will be generated shortly. You'll get a Telegram notification when it's ready.`
+      : `⚠️ Airtable tags are set but Workflow H was not triggered automatically.\n\nTo generate the campaign content:\n• Go to n8n.modishstandard.com → Workflow H → Execute\n• Or add \`N8N_CAMPAIGN_WEBHOOK_URL\` to .env.bot on the server`),
     { parse_mode: 'Markdown' }
   )
 })
