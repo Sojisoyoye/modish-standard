@@ -112,17 +112,46 @@ npm run docker:prod      # run via Docker (production)
 
 A management bot (`scripts/telegram-bot.ts`) runs on Hetzner and handles:
 
+**Add to POS (tracked inventory):**
+
 | Command | Purpose |
 |---------|---------|
 | `/add` | Add products to POS via text or CSV/Excel file |
 | `/sync [category]` | Push POS → Sanity website |
 | `/syncstock` | Trigger n8n Workflow J (stock → Airtable → content) |
-| `/image <slug>` | Upload a product photo → Cloudinary → Sanity |
-| `/setimage <slug> <public-id>` | Link an existing Cloudinary image to a product |
-| `/matchimages` | Auto-match Cloudinary assets to products by slug |
 | `/find <name>` | Search POS, get SKU + edit link |
 | `/list [category]` | Browse POS products |
+
+**Add to Sanity directly (no POS):**
+
+| Command | Purpose |
+|---------|---------|
+| `/addcategory <name>` | Create a new product category in Sanity |
+| `/addsanity <name>` | Add a product directly to the website catalog + Airtable |
+
+**Images:**
+
+| Command | Purpose |
+|---------|---------|
+| `/slug <name>` | Look up a product's slug by partial name |
+| `/image <slug>` | Send a photo (phone or desktop) → Cloudinary → Sanity + Airtable |
+| `/setimage <slug> <public-id>` | Link an existing Cloudinary image to a product |
+| `/matchimages` | Auto-match Cloudinary assets to products by slug |
+
+**Content & promo:**
+
+| Command | Purpose |
+|---------|---------|
+| `/promote <slug>` | Mark one product ready → Workflow A generates single-product posts |
+| `/promotecategory <slug> [type]` | Mark whole category ready (types: `New Product` · `Promo` · `Restock Alert`) |
+| `/campaign <tag> <slug>` | Set Campaign Tag on category → trigger Workflow H multi-product campaign |
+
+**Other:**
+
+| Command | Purpose |
+|---------|---------|
 | `/status` | Check POS + Sanity connections |
+| `/cancel` | Cancel the current multi-step operation |
 
 See [DEPLOY-BOT.md](./DEPLOY-BOT.md) for full setup and deployment instructions.
 

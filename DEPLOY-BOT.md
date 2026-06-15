@@ -336,24 +336,65 @@ docker compose up -d product-bot   # recreates the container with fresh env
 
 ## Bot commands reference
 
+### Add to POS (tracked inventory)
+
 | Command | What it does |
 |---|---|
-| `/start` | Show welcome message + full command list |
 | `/add` | Add products to POS — describe in plain text, or upload a CSV/Excel file. Bot checks POS, creates missing products, then offers to sync to the website. |
-| `/addcategory <name>` | Create a new product category in Sanity. Bot derives the slug automatically and asks for a short description. The category is immediately available in Sanity Studio and the website. |
-| `/find <name>` | Search POS by name (partial match). Returns SKU, price, stock, and a direct edit link. |
 | `/sync` | Sync **all** POS products → Sanity website. New products are created; existing ones get price + stock updated. |
 | `/sync <category>` | Sync one category only (faster, less noisy). |
-| `/syncstock` | Trigger n8n Workflow J on demand: pulls POS stock → updates Airtable Product Catalog → kicks off content generation workflows (new products → promo content, restocked → back-in-stock content). |
+| `/syncstock` | Trigger n8n Workflow J: pulls POS stock → updates Airtable Product Catalog → kicks off content generation workflows. |
+| `/find <name>` | Search POS by name (partial match). Returns SKU, price, stock, and a direct edit link. |
 | `/list` | List up to 30 active products from POS. |
 | `/list <category>` | List products filtered to one category. |
-| `/image <slug-or-sku>` | Two-step image upload: bot looks up the product, asks you to send a photo, uploads it to Cloudinary as `modish/products/{slug}`, then patches Sanity. |
-| `/setimage <slug> <public-id>` | Directly link an existing Cloudinary image to a product. Useful for backfilling images already uploaded to Cloudinary before this system was built. Example: `/setimage wenge-bb-board modish/products/wenge-bb` |
-| `/matchimages` | Auto-match: fetches all assets under `modish/products/` in Cloudinary, matches by slug, writes matches to Sanity, and reports any products still without images. |
-| `/status` | Check POS login + Sanity connection, shows product counts. |
-| `/cancel` | Cancel the current multi-step flow (add, image, etc.). |
 
-**Valid category slugs** (used with `/sync` and `/list`):
+### Add to Sanity directly (no POS)
+
+Use these for products you want on the website catalog but don't track in inventory.
+
+| Command | What it does |
+|---|---|
+| `/addcategory <name>` | Create a new product category in Sanity. Bot derives the slug automatically and asks for a short description. The category is immediately available in Sanity Studio and the website. |
+| `/addsanity <name>` | Add a product directly to the Sanity website catalog. Guided flow: pick category from list → enter price (or skip for "Request Price") → enter description (or skip to auto-generate). Also creates an Airtable row with `Ready for Promo = false`. |
+
+### Images
+
+Products created via `/addsanity` or `/add`+`/sync` start with no image. Use these to add them.
+
+| Command | What it does |
+|---|---|
+| `/slug <name>` | Look up a product's slug by partial name. Example: `/slug marble` returns all matching product names and their slugs. Use this before `/image` if you're not sure of the exact slug. |
+| `/image <slug>` | Two-step upload: bot looks up the product, asks you to send a photo (from phone camera, gallery, or desktop — any source works). Uploads to Cloudinary as `modish/products/{slug}`, patches Sanity, and updates Airtable `Image URL`. |
+| `/setimage <slug> <public-id>` | Directly link an existing Cloudinary image to a product by its public ID. Example: `/setimage wenge-bb-board modish/products/wenge-bb`. Also updates Airtable `Image URL`. |
+| `/matchimages` | Auto-match: fetches all assets under `modish/products/` in Cloudinary, matches by slug, patches Sanity and Airtable for each match, and reports any products still without images. |
+
+### Content & promo
+
+Control when Airtable picks up products for n8n content generation. Products start with `Ready for Promo = false` — nothing fires until you trigger it here.
+
+| Command | What it does |
+|---|---|
+| `/promote <slug>` | Mark one product ready for content generation. Sets `Ready for Promo = true` + `Content Type = New Product` in Airtable. Workflow A picks it up within 30 minutes and generates 4 platform posts (Instagram, Facebook, WhatsApp Status, WhatsApp Broadcast). |
+| `/promotecategory <category-slug>` | Mark all products in a category ready for content. Defaults to `Promo` content type. |
+| `/promotecategory <category-slug> <type>` | Same, with explicit content type. Valid types: `New Product` · `Promo` · `Restock Alert`. |
+| `/campaign <tag> <category-slug>` | Multi-product campaign via Workflow H. Sets `Campaign Tag` on all products in the category, resets `Campaign Generated`, then triggers Workflow H via webhook. Workflow H groups all products under the tag into a single campaign post. You receive a Telegram notification when drafts are ready. Example: `/campaign Marble Sheets Launch marble-sheets`. |
+
+**How the two content paths differ:**
+
+| Path | Command | Workflow | Output |
+|---|---|---|---|
+| Single-product promo | `/promote` or `/promotecategory` | Workflow A | One set of 4 posts per product |
+| Multi-product campaign | `/campaign` | Workflow H | One grouped campaign post for all products |
+
+### Other
+
+| Command | What it does |
+|---|---|
+| `/status` | Check POS login + Sanity connection, shows product counts. |
+| `/start` | Show welcome message + full command list. |
+| `/cancel` | Cancel the current multi-step flow (add, image, addsanity, etc.). |
+
+**Valid category slugs** (used with `/sync`, `/list`, `/promotecategory`, `/campaign`):
 
 | Slug | Products |
 |---|---|
@@ -365,7 +406,10 @@ docker compose up -d product-bot   # recreates the container with fresh env
 | `edge-tapes` | Edge banding tapes |
 | `doors` | Doors |
 | `pu-stone-panels` | PU stone panels |
+| `marble-sheets` | Marble sheets |
 | `accessories` | Everything else |
+
+Custom categories created via `/addcategory` are available immediately for `/addsanity`, `/promote`, `/promotecategory`, and `/campaign`. They are **not** auto-detected by `/sync` (which maps POS products by name patterns) — POS products must be assigned to custom categories manually in Sanity Studio.
 
 **CSV/Excel format for bulk `/add`:**
 
@@ -380,13 +424,28 @@ docker compose up -d product-bot   # recreates the container with fresh env
 
 ## n8n integration
 
-The bot exposes an internal HTTP API on port 3001 that n8n's Workflow J uses to pull live stock data from the POS.
+The bot integrates with 3 n8n workflows:
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| **J — POS Stock Sync** | Daily 8 AM / `/syncstock` / webhook | Pulls POS stock → upserts Airtable Product Catalog → triggers A/E for new/restocked products |
+| **A — Product Content Generation** | Every 30 min (polls Airtable) | Reads products where `Ready for Promo = true` → generates 4 platform posts per product via Claude |
+| **H — Multi-Product Campaign** | `/campaign` bot command / n8n manual | Reads products where `Campaign Tag != ''` → generates one grouped campaign post for the whole tag |
+
+**Bot → n8n HTTP API** (used by Workflow J):
 
 - Endpoint: `http://product-bot:3001/api/products` (internal Docker network only)
 - Auth: `Authorization: Bearer modish-pos-api-2024`
-- Full pipeline documentation: [N8N-INTEGRATION.md](./N8N-INTEGRATION.md)
 
-**Workflow J status: ACTIVE.** Runs every day at 8 AM Lagos time automatically. Trigger on demand with `/syncstock` in Telegram, or POST directly to `https://n8n.modishstandard.com/webhook/pos-stock-sync`.
+**Webhook URLs** (all unauthenticated POST):
+
+| Webhook | URL |
+|---|---|
+| Workflow J (stock sync) | `https://n8n.modishstandard.com/webhook/pos-stock-sync` |
+| Workflow A (content gen) | `https://n8n.modishstandard.com/webhook/trigger-workflow-a` |
+| Workflow H (campaign) | `https://n8n.modishstandard.com/webhook/campaign` |
+
+Full pipeline documentation: [N8N-INTEGRATION.md](./N8N-INTEGRATION.md)
 
 ---
 
