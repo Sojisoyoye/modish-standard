@@ -70,6 +70,29 @@ async function cloudinaryUploadBuffer(buffer: Buffer, publicId: string): Promise
   })
 }
 
+// ── Airtable helper ───────────────────────────────────────────────────────────
+
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appFae9SCFcGV98BO'
+const AIRTABLE_PRODUCT_TABLE = 'Product Catalog'
+
+async function airtableUpsertProduct(fields: Record<string, unknown>): Promise<void> {
+  const key = process.env.AIRTABLE_API_KEY
+  if (!key) throw new Error('AIRTABLE_API_KEY is not set')
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_PRODUCT_TABLE)}`
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      performUpsert: { fieldsToMergeOn: ['SKU'] },
+      records: [{ fields }],
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`Airtable ${res.status}: ${body}`)
+  }
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 const AUTHORIZED_IDS: Set<number> = new Set(
@@ -98,6 +121,7 @@ interface SessionData {
   pendingSanityProductSlug?: string
   pendingSanityProductCategoryId?: string
   pendingSanityProductCategorySlug?: string
+  pendingSanityProductCategoryName?: string
   pendingSanityProductPrice?: number
 }
 
@@ -736,7 +760,17 @@ bot.command('setimage', async ctx => {
     return
   }
 
-  const previewUrl = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME}/image/upload/f_auto,q_auto,w_400/${publicId}`
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
+  const previewUrl = `https://res.cloudinary.com/${cloudName}/image/upload/f_auto,q_auto,w_400/${publicId}`
+  const fullUrl = `https://res.cloudinary.com/${cloudName}/image/upload/f_auto,q_auto/${publicId}`
+
+  // Also update Airtable Image URL so content workflows can use the image
+  try {
+    await airtableUpsertProduct({ 'SKU': `product-${slug}`, 'Image URL': fullUrl })
+  } catch (err: any) {
+    console.error('[Airtable] image patch failed:', err.message ?? err)
+  }
+
   await ctx.reply(
     `✅ *${product.name}* updated!\n\nCloudinary ID: \`${publicId}\`\nPreview: ${previewUrl}`,
     { parse_mode: 'Markdown' }
@@ -1083,6 +1117,7 @@ bot.on('text', async ctx => {
     ctx.session.step = 'await_sanity_product_price'
     ctx.session.pendingSanityProductCategoryId = category._id
     ctx.session.pendingSanityProductCategorySlug = category.slug
+    ctx.session.pendingSanityProductCategoryName = category.name
 
     await ctx.reply(
       `✅ Category: *${category.name}*\n\nWhat is the price in Naira? (e.g. \`45000\`)\nType \`skip\` if you want to show "Request Price" instead.`,
@@ -1124,7 +1159,7 @@ bot.on('text', async ctx => {
     const productName = ctx.session.pendingSanityProductName!
     const productSlug = ctx.session.pendingSanityProductSlug!
     const categoryId = ctx.session.pendingSanityProductCategoryId!
-    const categorySlug = ctx.session.pendingSanityProductCategorySlug!
+    const categoryName = ctx.session.pendingSanityProductCategoryName!
     const price = ctx.session.pendingSanityProductPrice
     ctx.session = {}
 
@@ -1153,13 +1188,38 @@ bot.on('text', async ctx => {
       return
     }
 
+    // Push to Airtable so n8n content workflows (A, E) can run on it
+    let airtableOk = true
+    try {
+      const today = new Date().toISOString().split('T')[0]
+      await airtableUpsertProduct({
+        'Product Name': productName,
+        'SKU': `product-${productSlug}`,
+        'Category': categoryName,
+        'Price (₦)': price ?? 0,
+        'Description': shortDescription,
+        'Stock Status': 'In Stock',
+        'Ready for Promo': true,
+        'Date Added': today,
+        'Content Type': 'New Product',
+        'Source Code': 'sanity-direct',
+        'Image URL': '',
+      })
+    } catch (err: any) {
+      airtableOk = false
+      console.error('[Airtable] upsert failed:', err.message ?? err)
+    }
+
     const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://www.modishstandard.com'
     await ctx.reply(
       `✅ *${productName}* is now live on the website!\n\n` +
       `*Slug:* \`${productSlug}\`\n` +
       `*Price:* ${price ? `₦${price.toLocaleString()}` : 'Request Price'}\n` +
-      `*URL:* ${siteUrl}/products/${productSlug}\n\n` +
-      `Use \`/image ${productSlug}\` to add a photo.`,
+      `*URL:* ${siteUrl}/products/${productSlug}\n` +
+      (airtableOk
+        ? `*Airtable:* ✅ Added to Product Catalog — content workflows will run\n`
+        : `*Airtable:* ⚠️ Sync failed — check AIRTABLE_API_KEY in .env.bot\n`) +
+      `\nUse \`/image ${productSlug}\` to add a photo.`,
       { parse_mode: 'Markdown' }
     )
     return
@@ -1281,6 +1341,15 @@ bot.on('photo', async ctx => {
   } catch (err: any) {
     await ctx.reply(`❌ Sanity patch failed: ${err.message ?? err}\n\nImage is uploaded at: ${secureUrl}`)
     return
+  }
+
+  // Also update Airtable Image URL so content workflows can use the image
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
+  const fullUrl = `https://res.cloudinary.com/${cloudName}/image/upload/f_auto,q_auto/${publicId}`
+  try {
+    await airtableUpsertProduct({ 'SKU': `product-${slug}`, 'Image URL': fullUrl })
+  } catch (err: any) {
+    console.error('[Airtable] image patch failed:', err.message ?? err)
   }
 
   await ctx.reply(
