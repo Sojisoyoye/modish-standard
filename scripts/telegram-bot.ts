@@ -499,7 +499,8 @@ bot.command('start', async ctx => {
     `/promotecategory <slug> [type] — Mark whole category ready (types: New Product · Promo · Restock Alert)\n` +
     `/campaign <tag> <category-slug> — Set Campaign Tag + trigger Workflow H multi-product campaign\n\n` +
     `*— Images:*\n` +
-    `/image <slug> — Upload a photo → Cloudinary → attach to product\n` +
+    `/slug <name> — Look up a product's slug by name\n` +
+    `/image <slug> — Upload a photo (phone or desktop) → Cloudinary → attach to product\n` +
     `/setimage <slug> <public-id> — Link an existing Cloudinary image\n` +
     `/matchimages — Auto-match Cloudinary assets to products by slug\n\n` +
     `*— Browse & search:*\n` +
@@ -885,6 +886,42 @@ bot.command('matchimages', async ctx => {
   }
 
   await sendLong(ctx, msg)
+})
+
+// ── /slug ─────────────────────────────────────────────────────────────────────
+
+bot.command('slug', async ctx => {
+  const query = ctx.message.text.split(/\s+/).slice(1).join(' ').trim()
+
+  if (!query) {
+    await ctx.reply(
+      'Usage: `/slug <partial product name>`\nExample: `/slug marble`\n\nReturns matching product slugs so you can use them with /image.',
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  let products: Array<{ name: string; slug: string }> = []
+  try {
+    products = await sanity.fetch(
+      `*[_type == "product" && lower(name) match $q] | order(name asc) [0..19] { name, "slug": slug.current }`,
+      { q: `*${query.toLowerCase()}*` }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity lookup failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (products.length === 0) {
+    await ctx.reply(`No products found matching "*${query}*". Try a shorter or different search term.`, { parse_mode: 'Markdown' })
+    return
+  }
+
+  const lines = products.map(p => `• ${p.name}\n  \`${p.slug}\``).join('\n')
+  await ctx.reply(
+    `*Products matching "${query}":*\n\n${lines}\n\nCopy the slug and use it with \`/image <slug>\``,
+    { parse_mode: 'Markdown' }
+  )
 })
 
 // ── /promote ─────────────────────────────────────────────────────────────────
