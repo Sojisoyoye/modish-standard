@@ -1094,12 +1094,7 @@ bot.command('campaign', async ctx => {
     try {
       const res = await fetch(webhookUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(process.env.N8N_WEBHOOK_SECRET
-            ? { 'x-webhook-secret': process.env.N8N_WEBHOOK_SECRET }
-            : {}),
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaignTag, category: category.name }),
       })
       webhookOk = res.ok
