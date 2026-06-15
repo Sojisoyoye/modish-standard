@@ -340,6 +340,7 @@ docker compose up -d product-bot   # recreates the container with fresh env
 |---|---|
 | `/start` | Show welcome message + full command list |
 | `/add` | Add products to POS — describe in plain text, or upload a CSV/Excel file. Bot checks POS, creates missing products, then offers to sync to the website. |
+| `/addcategory <name>` | Create a new product category in Sanity. Bot derives the slug automatically and asks for a short description. The category is immediately available in Sanity Studio and the website. |
 | `/find <name>` | Search POS by name (partial match). Returns SKU, price, stock, and a direct edit link. |
 | `/sync` | Sync **all** POS products → Sanity website. New products are created; existing ones get price + stock updated. |
 | `/sync <category>` | Sync one category only (faster, less noisy). |

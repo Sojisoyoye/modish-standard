@@ -87,11 +87,13 @@ function isAuthorized(userId: number | undefined): boolean {
 // ── Session types ─────────────────────────────────────────────────────────────
 
 interface SessionData {
-  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo'
+  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description'
   pendingCreate?: ParsedProduct[]
   pendingCategories?: string[]
   pendingImageSlug?: string
   pendingImageProductName?: string
+  pendingCategoryName?: string
+  pendingCategorySlug?: string
 }
 
 interface BotContext extends Context {
@@ -428,6 +430,7 @@ bot.command('start', async ctx => {
     `I manage your POS inventory and sync products to the Modish Standard website.\n\n` +
     `*Commands:*\n` +
     `/add — Add products to POS via text, or upload a CSV/Excel file\n` +
+    `/addcategory <name> — Create a new product category in Sanity\n` +
     `/find [name] — Search POS by name, get SKU + direct edit link\n` +
     `/sync [category] — Push POS → Sanity website (omit category to sync all)\n` +
     `/syncstock — Sync stock to Airtable and trigger content generation (Instagram/WhatsApp)\n` +
@@ -806,6 +809,51 @@ bot.command('matchimages', async ctx => {
   await sendLong(ctx, msg)
 })
 
+// ── /addcategory ──────────────────────────────────────────────────────────────
+
+bot.command('addcategory', async ctx => {
+  const name = ctx.message.text.split(/\s+/).slice(1).join(' ').trim()
+
+  if (!name) {
+    await ctx.reply(
+      'Usage: `/addcategory <Category Name>`\nExample: `/addcategory Aluminium Sheets`',
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  const slug = toSlug(name)
+
+  // Check if a category with this slug already exists
+  let existing: { _id: string } | null = null
+  try {
+    existing = await sanity.fetch(
+      `*[_type == "category" && slug.current == $slug][0]{ _id }`,
+      { slug }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity lookup failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (existing) {
+    await ctx.reply(
+      `⚠️ A category with slug \`${slug}\` already exists.\n\nUse a different name, or manage it in Sanity Studio.`,
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  ctx.session.step = 'await_category_description'
+  ctx.session.pendingCategoryName = name
+  ctx.session.pendingCategorySlug = slug
+
+  await ctx.reply(
+    `✅ Category name: *${name}*\nSlug: \`${slug}\`\n\nNow send a short description for this category (max 500 characters).\n\nOr /cancel to abort.`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
 // ── /add ──────────────────────────────────────────────────────────────────────
 
 bot.command('add', async ctx => {
@@ -932,6 +980,48 @@ bot.action('cancel_action', async ctx => {
 
 bot.on('text', async ctx => {
   const { step } = ctx.session
+
+  if (step === 'await_category_description') {
+    const description = ctx.message.text.trim()
+    const categoryName = ctx.session.pendingCategoryName!
+    const categorySlug = ctx.session.pendingCategorySlug!
+    ctx.session = {}
+
+    if (description.length > 500) {
+      await ctx.reply(`❌ Description is too long (${description.length} chars). Max is 500. Please send a shorter description.`)
+      // Restore session so they can try again
+      ctx.session.step = 'await_category_description'
+      ctx.session.pendingCategoryName = categoryName
+      ctx.session.pendingCategorySlug = categorySlug
+      return
+    }
+
+    await ctx.reply(`✨ Creating category *${categoryName}*…`, { parse_mode: 'Markdown' })
+
+    try {
+      await sanity.createOrReplace({
+        _id: `category-${categorySlug}`,
+        _type: 'category',
+        name: categoryName,
+        slug: { _type: 'slug', current: categorySlug },
+        description,
+      })
+    } catch (err: any) {
+      await ctx.reply(`❌ Failed to create category: ${err.message ?? err}`)
+      return
+    }
+
+    await ctx.reply(
+      `✅ *Category created!*\n\n` +
+      `*Name:* ${categoryName}\n` +
+      `*Slug:* \`${categorySlug}\`\n\n` +
+      `⚠️ *Note:* The automatic /sync command maps products to categories based on product name patterns. ` +
+      `Products won't route to this new category automatically — assign them via Sanity Studio at \`/studio\`, ` +
+      `or use the category's slug when adding products.`,
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
 
   if (step === 'await_product_text') {
     ctx.session.step = undefined
