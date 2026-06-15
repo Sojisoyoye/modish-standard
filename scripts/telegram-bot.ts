@@ -87,13 +87,18 @@ function isAuthorized(userId: number | undefined): boolean {
 // ── Session types ─────────────────────────────────────────────────────────────
 
 interface SessionData {
-  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description'
+  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description'
   pendingCreate?: ParsedProduct[]
   pendingCategories?: string[]
   pendingImageSlug?: string
   pendingImageProductName?: string
   pendingCategoryName?: string
   pendingCategorySlug?: string
+  pendingSanityProductName?: string
+  pendingSanityProductSlug?: string
+  pendingSanityProductCategoryId?: string
+  pendingSanityProductCategorySlug?: string
+  pendingSanityProductPrice?: number
 }
 
 interface BotContext extends Context {
@@ -428,26 +433,30 @@ bot.command('start', async ctx => {
   await ctx.reply(
     `👋 *Welcome to Modish Standard Bot!*\n\n` +
     `I manage your POS inventory and sync products to the Modish Standard website.\n\n` +
-    `*Commands:*\n` +
-    `/add — Add products to POS via text, or upload a CSV/Excel file\n` +
-    `/addcategory <name> — Create a new product category in Sanity\n` +
-    `/find [name] — Search POS by name, get SKU + direct edit link\n` +
-    `/sync [category] — Push POS → Sanity website (omit category to sync all)\n` +
-    `/syncstock — Sync stock to Airtable and trigger content generation (Instagram/WhatsApp)\n` +
-    `/list [category] — Browse products currently in POS\n` +
-    `/image <slug> — Upload a photo to Cloudinary and attach it to a product\n` +
-    `/setimage <slug> <public-id> — Link an existing Cloudinary image to a product\n` +
-    `/matchimages — Auto-match Cloudinary assets to products by slug\n` +
+    `*— Add to POS (tracked inventory):*\n` +
+    `/add — Add products to POS via text or CSV/Excel file\n` +
+    `/sync [category] — Push POS products → Sanity website\n\n` +
+    `*— Add to Sanity directly (no POS):*\n` +
+    `/addsanity <name> — Add a product directly to the website catalog\n` +
+    `/addcategory <name> — Create a new product category\n\n` +
+    `*— Images:*\n` +
+    `/image <slug> — Upload a photo → Cloudinary → attach to product\n` +
+    `/setimage <slug> <public-id> — Link an existing Cloudinary image\n` +
+    `/matchimages — Auto-match Cloudinary assets to products by slug\n\n` +
+    `*— Browse & search:*\n` +
+    `/find <name> — Search POS by name, get SKU + edit link\n` +
+    `/list [category] — Browse POS products\n` +
+    `/syncstock — Trigger n8n stock sync + content generation\n` +
     `/status — Check POS + Sanity connections\n` +
-    `/cancel — Cancel the current operation\n\n` +
-    `*Category slugs* (for /sync and /list):\n` +
+    `/cancel — Cancel current operation\n\n` +
+    `*Category slugs* (for /sync, /list, /addsanity):\n` +
     `\`mdf-boards\` · \`hdf-boards\` · \`uv-gloss-boards\`\n` +
     `\`marine-boards\` · \`block-boards\` · \`edge-tapes\`\n` +
     `\`doors\` · \`pu-stone-panels\` · \`accessories\`\n\n` +
     `*Tips:*\n` +
-    `• /add then describe products in plain text, or just send a CSV/Excel file directly\n` +
-    `• /sync with no argument syncs everything at once\n` +
-    `• /find returns a direct POS edit link so you can update price/stock immediately`,
+    `• /addsanity for products not tracked in inventory (e.g. display items)\n` +
+    `• /add for products you want to track in POS stock, then /sync to publish\n` +
+    `• /find returns a direct POS edit link for price/stock updates`,
     { parse_mode: 'Markdown' }
   )
 })
@@ -809,6 +818,71 @@ bot.command('matchimages', async ctx => {
   await sendLong(ctx, msg)
 })
 
+// ── /addsanity ────────────────────────────────────────────────────────────────
+
+bot.command('addsanity', async ctx => {
+  const name = ctx.message.text.split(/\s+/).slice(1).join(' ').trim()
+
+  if (!name) {
+    await ctx.reply(
+      'Usage: `/addsanity <Product Name>`\nExample: `/addsanity Marble PU Stone Panel`\n\nUse this to add products directly to the Sanity website catalog without going through the POS.',
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  const slug = toSlug(name)
+
+  // Check if product already exists in Sanity
+  let existing: { _id: string } | null = null
+  try {
+    existing = await sanity.fetch(
+      `*[_type == "product" && slug.current == $slug][0]{ _id }`,
+      { slug }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity lookup failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (existing) {
+    await ctx.reply(
+      `⚠️ A product with slug \`${slug}\` already exists in Sanity.\n\nUse a different name or edit it in Sanity Studio.`,
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  // Fetch available categories
+  let categories: Array<{ _id: string; name: string; slug: string }>
+  try {
+    categories = await sanity.fetch(
+      `*[_type == "category"] | order(name asc) { _id, name, "slug": slug.current }`
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Failed to fetch categories: ${err.message ?? err}`)
+    return
+  }
+
+  if (categories.length === 0) {
+    await ctx.reply(
+      '⚠️ No categories found in Sanity. Create one first with `/addcategory <name>`.',
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  ctx.session.step = 'await_sanity_product_category'
+  ctx.session.pendingSanityProductName = name
+  ctx.session.pendingSanityProductSlug = slug
+
+  const catList = categories.map(c => `• \`${c.slug}\` — ${c.name}`).join('\n')
+  await ctx.reply(
+    `✅ Product: *${name}*\nSlug: \`${slug}\`\n\n*Available categories:*\n${catList}\n\nReply with the category slug, or /cancel to abort.`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
 // ── /addcategory ──────────────────────────────────────────────────────────────
 
 bot.command('addcategory', async ctx => {
@@ -980,6 +1054,116 @@ bot.action('cancel_action', async ctx => {
 
 bot.on('text', async ctx => {
   const { step } = ctx.session
+
+  if (step === 'await_sanity_product_category') {
+    const input = ctx.message.text.trim().toLowerCase()
+    const productName = ctx.session.pendingSanityProductName!
+    const productSlug = ctx.session.pendingSanityProductSlug!
+
+    // Look up the category by slug
+    let category: { _id: string; name: string; slug: string } | null = null
+    try {
+      category = await sanity.fetch(
+        `*[_type == "category" && slug.current == $slug][0]{ _id, name, "slug": slug.current }`,
+        { slug: input }
+      )
+    } catch (err: any) {
+      await ctx.reply(`❌ Sanity lookup failed: ${err.message ?? err}`)
+      return
+    }
+
+    if (!category) {
+      await ctx.reply(
+        `❌ No category found with slug \`${input}\`. Reply with one of the slugs listed above, or /cancel.`,
+        { parse_mode: 'Markdown' }
+      )
+      return
+    }
+
+    ctx.session.step = 'await_sanity_product_price'
+    ctx.session.pendingSanityProductCategoryId = category._id
+    ctx.session.pendingSanityProductCategorySlug = category.slug
+
+    await ctx.reply(
+      `✅ Category: *${category.name}*\n\nWhat is the price in Naira? (e.g. \`45000\`)\nType \`skip\` if you want to show "Request Price" instead.`,
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  if (step === 'await_sanity_product_price') {
+    const input = ctx.message.text.trim().toLowerCase()
+    const productName = ctx.session.pendingSanityProductName!
+    const productSlug = ctx.session.pendingSanityProductSlug!
+
+    let price: number | undefined
+    if (input !== 'skip') {
+      const parsed = parseFloat(input.replace(/[^\d.]/g, ''))
+      if (isNaN(parsed) || parsed <= 0) {
+        await ctx.reply(
+          'Please enter a valid price (numbers only, e.g. `45000`) or type `skip` for "Request Price".',
+          { parse_mode: 'Markdown' }
+        )
+        return
+      }
+      price = parsed
+    }
+
+    ctx.session.step = 'await_sanity_product_description'
+    ctx.session.pendingSanityProductPrice = price
+
+    await ctx.reply(
+      `✅ Price: ${price ? `₦${price.toLocaleString()}` : 'Request Price'}\n\nSend a short description for this product (shown on the website), or type \`skip\` to generate one automatically.`,
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  if (step === 'await_sanity_product_description') {
+    const input = ctx.message.text.trim()
+    const productName = ctx.session.pendingSanityProductName!
+    const productSlug = ctx.session.pendingSanityProductSlug!
+    const categoryId = ctx.session.pendingSanityProductCategoryId!
+    const categorySlug = ctx.session.pendingSanityProductCategorySlug!
+    const price = ctx.session.pendingSanityProductPrice
+    ctx.session = {}
+
+    const shortDescription = (input.toLowerCase() === 'skip' || !input)
+      ? `${productName}. Premium quality product from Modish Standard, Lagos.`
+      : input
+
+    await ctx.reply(`✨ Creating *${productName}* in Sanity…`, { parse_mode: 'Markdown' })
+
+    try {
+      await sanity.createOrReplace({
+        _id: `product-${productSlug}`,
+        _type: 'product',
+        name: productName,
+        slug: { _type: 'slug', current: productSlug },
+        category: { _type: 'reference', _ref: categoryId },
+        shortDescription,
+        price: price ?? 0,
+        stockStatus: 'in_stock',
+        isFeatured: false,
+        metaTitle: `${productName} | Lagos Nigeria — Modish Standard`.slice(0, 70),
+        metaDescription: `Buy ${productName} in Lagos. ${shortDescription}`.slice(0, 160),
+      })
+    } catch (err: any) {
+      await ctx.reply(`❌ Failed to create product: ${err.message ?? err}`)
+      return
+    }
+
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://www.modishstandard.com'
+    await ctx.reply(
+      `✅ *${productName}* is now live on the website!\n\n` +
+      `*Slug:* \`${productSlug}\`\n` +
+      `*Price:* ${price ? `₦${price.toLocaleString()}` : 'Request Price'}\n` +
+      `*URL:* ${siteUrl}/products/${productSlug}\n\n` +
+      `Use \`/image ${productSlug}\` to add a photo.`,
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
 
   if (step === 'await_category_description') {
     const description = ctx.message.text.trim()
