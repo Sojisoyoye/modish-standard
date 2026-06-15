@@ -93,6 +93,37 @@ async function airtableUpsertProduct(fields: Record<string, unknown>): Promise<v
   }
 }
 
+async function airtableSearch(formula: string): Promise<Array<{ id: string; fields: Record<string, unknown> }>> {
+  const key = process.env.AIRTABLE_API_KEY
+  if (!key) throw new Error('AIRTABLE_API_KEY is not set')
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_PRODUCT_TABLE)}?filterByFormula=${encodeURIComponent(formula)}`
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`Airtable ${res.status}: ${body}`)
+  }
+  const data = await res.json() as { records: Array<{ id: string; fields: Record<string, unknown> }> }
+  return data.records
+}
+
+async function airtablePatchRecords(records: Array<{ id: string; fields: Record<string, unknown> }>): Promise<void> {
+  const key = process.env.AIRTABLE_API_KEY
+  if (!key) throw new Error('AIRTABLE_API_KEY is not set')
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_PRODUCT_TABLE)}`
+  for (let i = 0; i < records.length; i += 10) {
+    const batch = records.slice(i, i + 10)
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ records: batch }),
+    })
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`Airtable ${res.status}: ${body}`)
+    }
+  }
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 const AUTHORIZED_IDS: Set<number> = new Set(
@@ -463,6 +494,9 @@ bot.command('start', async ctx => {
     `*— Add to Sanity directly (no POS):*\n` +
     `/addsanity <name> — Add a product directly to the website catalog\n` +
     `/addcategory <name> — Create a new product category\n\n` +
+    `*— Content & promo:*\n` +
+    `/promote <slug> — Mark a product Ready for Promo → Workflow A generates content\n` +
+    `/promotecategory <slug> [type] — Mark all products in a category (types: New Product · Promo · Campaign)\n\n` +
     `*— Images:*\n` +
     `/image <slug> — Upload a photo → Cloudinary → attach to product\n` +
     `/setimage <slug> <public-id> — Link an existing Cloudinary image\n` +
@@ -852,6 +886,139 @@ bot.command('matchimages', async ctx => {
   await sendLong(ctx, msg)
 })
 
+// ── /promote ─────────────────────────────────────────────────────────────────
+
+bot.command('promote', async ctx => {
+  const slug = ctx.message.text.split(/\s+/).slice(1).join(' ').trim()
+
+  if (!slug) {
+    await ctx.reply(
+      'Usage: `/promote <product-slug>`\nExample: `/promote wenge-bb-board`\n\nSets Ready for Promo = true in Airtable so Workflow A generates promotional content.',
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  // Look up product name in Sanity
+  let product: { name: string } | null = null
+  try {
+    product = await sanity.fetch(
+      `*[_type == "product" && slug.current == $slug][0]{ name }`,
+      { slug }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity lookup failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (!product) {
+    await ctx.reply(`❌ No product found with slug \`${slug}\`.`, { parse_mode: 'Markdown' })
+    return
+  }
+
+  await ctx.reply(`🔍 Finding *${product.name}* in Airtable…`, { parse_mode: 'Markdown' })
+
+  let records: Array<{ id: string; fields: Record<string, unknown> }>
+  try {
+    records = await airtableSearch(`{Product Name}="${product.name.replace(/"/g, '\\"')}"`)
+  } catch (err: any) {
+    await ctx.reply(`❌ Airtable search failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (records.length === 0) {
+    await ctx.reply(
+      `⚠️ *${product.name}* is not in the Airtable Product Catalog yet.\n\nIf it came from POS, run /syncstock first. If it was added via /addsanity, the Airtable sync may have failed — try /addsanity again or check AIRTABLE_API_KEY.`,
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  try {
+    await airtablePatchRecords(
+      records.map(r => ({ id: r.id, fields: { 'Ready for Promo': true, 'Content Type': 'New Product' } }))
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Airtable patch failed: ${err.message ?? err}`)
+    return
+  }
+
+  await ctx.reply(
+    `✅ *${product.name}* is now marked *Ready for Promo*!\n\nWorkflow A will pick it up within the next 30 minutes and generate promotional content.`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+// ── /promotecategory ──────────────────────────────────────────────────────────
+
+bot.command('promotecategory', async ctx => {
+  const args = ctx.message.text.split(/\s+/).slice(1)
+  const categorySlug = args[0]?.trim()
+  const contentType = args[1]?.trim() || 'Promo'
+
+  const validTypes = ['New Product', 'Promo', 'Campaign', 'Restock Alert']
+  const resolvedType = validTypes.find(t => t.toLowerCase() === contentType.toLowerCase()) ?? 'Promo'
+
+  if (!categorySlug) {
+    await ctx.reply(
+      'Usage: `/promotecategory <category-slug> [content-type]`\n\nExamples:\n`/promotecategory uv-gloss-boards`\n`/promotecategory uv-gloss-boards Campaign`\n\nContent types: `New Product` · `Promo` · `Campaign` · `Restock Alert`',
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  // Get category name from Sanity
+  let category: { name: string } | null = null
+  try {
+    category = await sanity.fetch(
+      `*[_type == "category" && slug.current == $slug][0]{ name }`,
+      { slug: categorySlug }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sanity lookup failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (!category) {
+    await ctx.reply(`❌ No category found with slug \`${categorySlug}\`.`, { parse_mode: 'Markdown' })
+    return
+  }
+
+  await ctx.reply(`🔍 Finding all *${category.name}* products in Airtable…`, { parse_mode: 'Markdown' })
+
+  let records: Array<{ id: string; fields: Record<string, unknown> }>
+  try {
+    records = await airtableSearch(`{Category}="${category.name.replace(/"/g, '\\"')}"`)
+  } catch (err: any) {
+    await ctx.reply(`❌ Airtable search failed: ${err.message ?? err}`)
+    return
+  }
+
+  if (records.length === 0) {
+    await ctx.reply(
+      `⚠️ No *${category.name}* products found in Airtable.\n\nRun /sync ${categorySlug} to push them from POS first, then try again.`,
+      { parse_mode: 'Markdown' }
+    )
+    return
+  }
+
+  await ctx.reply(`Found ${records.length} product(s). Setting *${resolvedType}* + Ready for Promo…`, { parse_mode: 'Markdown' })
+
+  try {
+    await airtablePatchRecords(
+      records.map(r => ({ id: r.id, fields: { 'Ready for Promo': true, 'Content Type': resolvedType } }))
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Airtable patch failed: ${err.message ?? err}`)
+    return
+  }
+
+  await ctx.reply(
+    `✅ *${records.length} ${category.name} product(s)* marked Ready for Promo (${resolvedType})!\n\nWorkflow A will process them within the next 30 minutes.`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
 // ── /addsanity ────────────────────────────────────────────────────────────────
 
 bot.command('addsanity', async ctx => {
@@ -1199,7 +1366,7 @@ bot.on('text', async ctx => {
         'Price (₦)': price ?? 0,
         'Description': shortDescription,
         'Stock Status': 'In Stock',
-        'Ready for Promo': true,
+        'Ready for Promo': false,
         'Date Added': today,
         'Content Type': 'New Product',
         'Source Code': 'sanity-direct',
@@ -1217,7 +1384,7 @@ bot.on('text', async ctx => {
       `*Price:* ${price ? `₦${price.toLocaleString()}` : 'Request Price'}\n` +
       `*URL:* ${siteUrl}/products/${productSlug}\n` +
       (airtableOk
-        ? `*Airtable:* ✅ Added to Product Catalog — content workflows will run\n`
+        ? `*Airtable:* ✅ Added to Product Catalog (promo off — use /promote to trigger content)\n`
         : `*Airtable:* ⚠️ Sync failed — check AIRTABLE_API_KEY in .env.bot\n`) +
       `\nUse \`/image ${productSlug}\` to add a photo.`,
       { parse_mode: 'Markdown' }
