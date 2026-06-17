@@ -6,19 +6,12 @@ import Image from "next/image";
 import WardrobeIcon from "@/components/wardrobe/WardrobeIcon";
 import FavouritesIcon from "@/components/favourites/FavouritesIcon";
 
-const categories = [
-  { name: "MDF Boards", slug: "mdf-boards" },
-  { name: "HDF Boards", slug: "hdf-boards" },
-  { name: "UV Gloss Boards", slug: "uv-gloss-boards" },
-  { name: "Marine Boards", slug: "marine-boards" },
-  { name: "Edge Tapes", slug: "edge-tapes" },
-  { name: "Doors", slug: "doors" },
-  { name: "PU Stone Panels", slug: "pu-stone-panels" },
-  { name: "Block Boards", slug: "block-boards" },
-  { name: "Accessories", slug: "accessories" },
-];
+interface NavCategory {
+  name: string;
+  slug: { current: string };
+}
 
-export default function Header() {
+export default function Header({ categories = [] }: { categories?: NavCategory[] }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
   const [mobileCategoryOpen, setMobileCategoryOpen] = useState(false);
@@ -86,8 +79,8 @@ export default function Header() {
                 <div className="absolute left-0 top-full mt-2 w-56 rounded-xl bg-white py-2 shadow-xl border border-gray-100">
                   {categories.map((cat) => (
                     <Link
-                      key={cat.slug}
-                      href={`/categories/${cat.slug}`}
+                      key={cat.slug.current}
+                      href={`/categories/${cat.slug.current}`}
                       className="block px-4 py-2.5 text-sm text-gray-700 hover:bg-[#EEF2FF] hover:text-[#1B2D72] transition-colors"
                       onClick={() => setCategoryDropdownOpen(false)}
                     >
@@ -205,8 +198,8 @@ export default function Header() {
                 <div className="pl-4 space-y-1">
                   {categories.map((cat) => (
                     <Link
-                      key={cat.slug}
-                      href={`/categories/${cat.slug}`}
+                      key={cat.slug.current}
+                      href={`/categories/${cat.slug.current}`}
                       className="block px-3 py-2.5 text-sm text-gray-600 hover:text-[#1B2D72] hover:bg-[#EEF2FF] rounded-lg transition-colors min-h-[48px] flex items-center"
                       onClick={() => setMobileMenuOpen(false)}
                     >

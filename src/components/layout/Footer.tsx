@@ -1,8 +1,8 @@
 import Link from "next/link";
 import Image from "next/image";
 import { sanityFetch } from "@/lib/sanity/client";
-import { SHOWROOM_QUERY } from "@/lib/sanity/queries";
-import type { ShowroomInfo } from "@/types";
+import { SHOWROOM_QUERY, ALL_CATEGORIES_QUERY } from "@/lib/sanity/queries";
+import type { ShowroomInfo, Category } from "@/types";
 
 const fallbackShowroom: ShowroomInfo = {
   locations: [
@@ -26,19 +26,11 @@ const quickLinks = [
   { label: "Search", href: "/search" },
 ];
 
-const categories = [
-  { name: "MDF Boards", slug: "mdf-boards" },
-  { name: "HDF Boards", slug: "hdf-boards" },
-  { name: "UV Gloss Boards", slug: "uv-gloss-boards" },
-  { name: "Marine Boards", slug: "marine-boards" },
-  { name: "Edge Tapes", slug: "edge-tapes" },
-  { name: "Doors", slug: "doors" },
-  { name: "PU Stone Panels", slug: "pu-stone-panels" },
-  { name: "Accessories", slug: "accessories" },
-];
-
 export default async function Footer() {
-  const sanityData = await sanityFetch<ShowroomInfo | null>(SHOWROOM_QUERY, {}, null);
+  const [sanityData, categories] = await Promise.all([
+    sanityFetch<ShowroomInfo | null>(SHOWROOM_QUERY, {}, null),
+    sanityFetch<Category[]>(ALL_CATEGORIES_QUERY, {}, []),
+  ]);
   const showroom = sanityData?.locations?.length ? sanityData : fallbackShowroom;
   const primaryLocation = showroom.locations?.[0] ?? fallbackShowroom.locations[0];
   const phone = primaryLocation.phone?.[0] ?? "";
@@ -90,9 +82,9 @@ export default async function Footer() {
             </h3>
             <ul className="space-y-3">
               {categories.map((cat) => (
-                <li key={cat.slug}>
+                <li key={cat.slug.current}>
                   <Link
-                    href={`/categories/${cat.slug}`}
+                    href={`/categories/${cat.slug.current}`}
                     className="text-sm text-white/60 hover:text-white transition-colors"
                   >
                     {cat.name}

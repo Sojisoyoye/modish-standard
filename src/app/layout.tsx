@@ -7,6 +7,9 @@ import WhatsAppFloat from "@/components/layout/WhatsAppFloat";
 import { WardrobeProvider } from "@/lib/wardrobe";
 import WardrobeDrawer from "@/components/wardrobe/WardrobeDrawer";
 import { FavouritesProvider } from "@/lib/favourites";
+import { sanityFetch } from "@/lib/sanity/client";
+import { ALL_CATEGORIES_QUERY } from "@/lib/sanity/queries";
+import type { Category } from "@/types";
 import "./globals.css";
 
 const cormorant = Cormorant_Garamond({
@@ -40,19 +43,20 @@ export const metadata: Metadata = {
   ),
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   const gaId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
+  const categories = await sanityFetch<Category[]>(ALL_CATEGORIES_QUERY, {}, []);
 
   return (
     <html lang="en" className={`${cormorant.variable} ${dmSans.variable} bg-white`}>
       <body className="font-[family-name:var(--font-body)] antialiased min-h-screen flex flex-col bg-white">
         <FavouritesProvider>
         <WardrobeProvider>
-          <Header />
+          <Header categories={categories} />
           <main className="flex-1">{children}</main>
           <Footer />
           <WhatsAppFloat />
