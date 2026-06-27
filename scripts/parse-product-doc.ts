@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { PDFParse } from 'pdf-parse'
 
 export interface ParsedProduct {
   name: string
@@ -261,6 +262,13 @@ export function parseTextInput(text: string): ParsedProduct[] {
   }
 
   return deduplicate(results)
+}
+
+export async function parsePDF(buffer: Buffer): Promise<ParsedProduct[]> {
+  const parser = new PDFParse({ data: buffer })
+  const result = await parser.getText()
+  await parser.destroy()
+  return parseTextInput(result.text)
 }
 
 function deduplicate(products: ParsedProduct[]): ParsedProduct[] {

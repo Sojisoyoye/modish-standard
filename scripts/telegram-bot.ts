@@ -35,6 +35,7 @@ import { POSClient, createPOSClientFromEnv, type POSProduct } from './pos-client
 import {
   parseCSV,
   parseExcel,
+  parsePDF,
   parseTextInput,
   type ParsedProduct,
 } from './parse-product-doc'
@@ -1664,9 +1665,9 @@ bot.on('document', async ctx => {
   const filename = doc.file_name ?? ''
   const ext = filename.split('.').pop()?.toLowerCase() ?? ''
 
-  if (!['csv', 'xlsx', 'xls'].includes(ext)) {
+  if (!['csv', 'xlsx', 'xls', 'pdf'].includes(ext)) {
     await ctx.reply(
-      "Couldn't parse this file. Please send a CSV or Excel file (.csv, .xlsx, .xls)."
+      "Couldn't parse this file. Please send a CSV, Excel (.csv, .xlsx, .xls) or PDF file."
     )
     return
   }
@@ -1689,11 +1690,13 @@ bot.on('document', async ctx => {
   try {
     if (ext === 'csv') {
       parsed = parseCSV(fileBuffer.toString('utf-8'))
+    } else if (ext === 'pdf') {
+      parsed = await parsePDF(fileBuffer)
     } else {
       parsed = parseExcel(fileBuffer)
     }
   } catch (err: any) {
-    await ctx.reply("Couldn't parse this file. Please send a CSV or Excel file.")
+    await ctx.reply("Couldn't parse this file. Please send a CSV, Excel, or PDF file.")
     return
   }
 
