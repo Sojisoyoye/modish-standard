@@ -36,7 +36,6 @@ import { POSClient, createPOSClientFromEnv, type POSProduct } from './pos-client
 import {
   parseCSV,
   parseExcel,
-  parsePDF,
   parseTextInput,
   parseInvoiceRowsRich,
   pdfNameToPosName,
@@ -161,7 +160,7 @@ interface SessionData {
   pendingSanityProductPrice?: number
   pendingInvoiceNewRows?: InvoiceRow[]
   pendingInvoiceExchangeRate?: number
-  pendingInvoiceCategorySlug?: string
+  pendingInvoiceCategorySlugs?: string[]
 }
 
 interface BotContext extends Context {
@@ -1313,19 +1312,29 @@ bot.action('confirm_create', async ctx => {
     return
   }
 
-  const successes: string[] = []
+  const createdNames: string[] = []
   const failures: string[] = []
 
   for (const product of pending) {
     try {
-      const result = await pos.createProduct({
+      await pos.createProduct({
         name: product.name,
         costPrice: product.costPrice ?? Math.round((product.price ?? 0) * 0.65),
         sellingPrice: product.price ?? 0,
       })
-      successes.push(`✅ ${result.name} (SKU: ${result.sku})`)
+      createdNames.push(product.name)
     } catch (err: any) {
       failures.push(`❌ ${product.name}: ${err.message ?? err}`)
+    }
+  }
+
+  const successes: string[] = []
+  if (createdNames.length > 0) {
+    const allPos = await pos.getProducts()
+    const skuMap = new Map(allPos.map(p => [p.parsedName.toLowerCase(), p.sku]))
+    for (const name of createdNames) {
+      const sku = skuMap.get(name.toLowerCase()) ?? 'N/A'
+      successes.push(`✅ ${name} (SKU: ${sku})`)
     }
   }
 
@@ -1395,7 +1404,7 @@ bot.action('confirm_invoice_create', async ctx => {
 
   const newRows = ctx.session.pendingInvoiceNewRows ?? []
   const rate = ctx.session.pendingInvoiceExchangeRate ?? 0
-  const categorySlug = ctx.session.pendingInvoiceCategorySlug ?? 'edge-tapes'
+  const categorySlugs = ctx.session.pendingInvoiceCategorySlugs ?? ['edge-tapes']
   ctx.session = {}
 
   if (newRows.length === 0 || rate <= 0) {
@@ -1414,21 +1423,27 @@ bot.action('confirm_invoice_create', async ctx => {
     return
   }
 
-  const successes: string[] = []
+  const createdNames: string[] = []
   const failures: string[] = []
 
   for (const row of newRows) {
     const costPrice  = Math.round(row.usdUnitPrice * rate)
     const sellingPrice = row.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
     try {
-      const result = await pos.createProduct({
-        name: row.posName,
-        costPrice,
-        sellingPrice,
-      })
-      successes.push(`✅ ${result.name} (SKU: ${result.sku})`)
+      await pos.createProduct({ name: row.posName, costPrice, sellingPrice })
+      createdNames.push(row.posName)
     } catch (err: any) {
       failures.push(`❌ ${row.posName}: ${err.message ?? err}`)
+    }
+  }
+
+  const successes: string[] = []
+  if (createdNames.length > 0) {
+    const allPos = await pos.getProducts()
+    const skuMap = new Map(allPos.map((p: any) => [p.parsedName.toLowerCase(), p.sku]))
+    for (const name of createdNames) {
+      const sku = skuMap.get(name.toLowerCase()) ?? 'N/A'
+      successes.push(`✅ ${name} (SKU: ${sku})`)
     }
   }
 
@@ -1445,25 +1460,29 @@ bot.action('confirm_invoice_create', async ctx => {
         Markup.button.callback('Skip', 'cancel_action'),
       ])
     )
-    // Store category for sync
-    ctx.session.pendingInvoiceCategorySlug = categorySlug
+    ctx.session.pendingInvoiceCategorySlugs = categorySlugs
   }
 })
 
 bot.action('confirm_invoice_sync', async ctx => {
   await ctx.answerCbQuery()
-  const categorySlug = ctx.session.pendingInvoiceCategorySlug
+  const categorySlugs = ctx.session.pendingInvoiceCategorySlugs ?? []
   ctx.session = {}
 
   await ctx.reply(`🔄 Syncing new products to Sanity…`)
-  try {
-    const result = await runSync(categorySlug)
-    await ctx.reply(
-      `✅ *Sync complete!*\n\n✨ Created: ${result.created}\n🔄 Updated: ${result.updated}\n⚠️ Skipped: ${result.skipped}`,
-      { parse_mode: 'Markdown' }
-    )
-  } catch (err: any) {
-    await ctx.reply(`❌ Sync failed: ${err.message ?? err}`)
+  const results: string[] = []
+  for (const slug of categorySlugs) {
+    try {
+      const result = await runSync(slug)
+      results.push(`*${slug}*: ✨ ${result.created} created, 🔄 ${result.updated} updated, ⚠️ ${result.skipped} skipped`)
+    } catch (err: any) {
+      results.push(`*${slug}*: ❌ ${err.message ?? err}`)
+    }
+  }
+  if (results.length > 0) {
+    await ctx.reply(`✅ *Sync complete!*\n\n` + results.join('\n'), { parse_mode: 'Markdown' })
+  } else {
+    await ctx.reply('Nothing to sync.')
   }
 })
 
@@ -1692,6 +1711,13 @@ bot.on('text', async ctx => {
     return
   }
 
+  if (step === 'await_invoice_confirm') {
+    await ctx.reply(
+      'Please use the buttons above to confirm or cancel, or type /cancel to abort.'
+    )
+    return
+  }
+
   if (step === 'await_product_text') {
     ctx.session.step = undefined
     const text = ctx.message.text
@@ -1867,7 +1893,7 @@ bot.on('document', async ctx => {
 
         ctx.session.step = 'await_exchange_rate_for_invoice'
         ctx.session.pendingInvoiceNewRows = newRows
-        ctx.session.pendingInvoiceCategorySlug = newRows[0]?.categorySlug ?? 'edge-tapes'
+        ctx.session.pendingInvoiceCategorySlugs = [...new Set(newRows.map(r => r.categorySlug))]
 
         await sendLong(ctx, msg)
         return
@@ -1878,10 +1904,10 @@ bot.on('document', async ctx => {
       }
     }
 
-    // Not invoice format — fall back to text parsing
+    // Not invoice format — fall back to text parsing (rawText already extracted above)
     let parsed: ParsedProduct[]
     try {
-      parsed = await parsePDF(fileBuffer)
+      parsed = parseTextInput(rawText)
     } catch (err: any) {
       await ctx.reply("Couldn't parse this PDF. Please check the file format.")
       return

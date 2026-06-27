@@ -29,7 +29,7 @@ export const INVOICE_PARENTHETICAL_NAMES: Record<string, string> = {
   'basket':      'Basket',
 }
 
-export function pdfNameToPosName(rawName: string): string {
+export function pdfNameToPosName(rawName: string, tapeSize = '48MM'): string {
   const isGlossy = /Glossy\s*$/i.test(rawName)
 
   // Check for parenthetical special names first
@@ -38,7 +38,7 @@ export function pdfNameToPosName(rawName: string): string {
     const paren = parenMatch[1].trim().toLowerCase()
     for (const [key, label] of Object.entries(INVOICE_PARENTHETICAL_NAMES)) {
       if (paren.includes(key)) {
-        return isGlossy ? `${label} 48MM Gloss` : `${label} 48MM`
+        return isGlossy ? `${label} ${tapeSize} Gloss` : `${label} ${tapeSize}`
       }
     }
   }
@@ -59,7 +59,7 @@ export function pdfNameToPosName(rawName: string): string {
     color = color.replace(new RegExp(`\\b${wrong}\\b`, 'gi'), right)
   }
 
-  return isGlossy ? `${color} 48MM Gloss` : `${color} 48MM`
+  return isGlossy ? `${color} ${tapeSize} Gloss` : `${color} ${tapeSize}`
 }
 
 export interface ParsedProduct {
@@ -336,9 +336,12 @@ export function parseInvoiceRowsRich(text: string): InvoiceRow[] {
   const lines = text.split('\n')
 
   let contextCategory = ''
+  let tapeSize = '48MM'
   for (const line of lines) {
-    if (/\d+\.?\d*\s*[*×xX]\s*\d+\s*MM/i.test(line.replace(/\t/g, ' '))) {
+    const m = line.replace(/\t/g, ' ').match(/\d+\.?\d*\s*[*×xX]\s*(\d+\s*MM)/i)
+    if (m) {
       contextCategory = 'edge-tapes'
+      tapeSize = m[1].replace(/\s+/g, '').toUpperCase()
       break
     }
   }
@@ -377,13 +380,13 @@ export function parseInvoiceRowsRich(text: string): InvoiceRow[] {
       .map(w => w.length > 0 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w)
       .join(' ')
 
-    const usdUnitPrice = Math.min(...usdValues)
+    const usdUnitPrice = usdValues[0]
     const face: InvoiceRow['face'] = /Glossy\s*$/i.test(pdfName) ? 'Glossy'
       : /Matt\s*$/i.test(pdfName) ? 'Matt'
       : /Embossed\s*$/i.test(pdfName) ? 'Embossed'
       : 'Unknown'
 
-    const posName = pdfNameToPosName(pdfName)
+    const posName = pdfNameToPosName(pdfName, tapeSize)
     const cat = contextCategory || inferCategoryFromName(rawName)
 
     results.push({ pdfName, posName, usdUnitPrice, face, categorySlug: cat })

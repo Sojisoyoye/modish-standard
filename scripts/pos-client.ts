@@ -175,15 +175,7 @@ export class POSClient {
       throw new Error(`createProduct failed — status ${res.status}, location: ${location}`)
     }
 
-    const products = await this.getProducts()
-    const created = products.find(
-      p => p.parsedName.toLowerCase() === input.name.toLowerCase()
-    )
-    if (!created) {
-      throw new Error(`Product created but not found in list: "${input.name}"`)
-    }
-
-    return { sku: created.sku, name: created.parsedName }
+    return { sku: '', name: input.name }
   }
 
   async checkProductsByName(names: string[]): Promise<{ found: POSProduct[]; missing: string[] }> {
