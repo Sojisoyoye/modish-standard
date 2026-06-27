@@ -28,6 +28,7 @@ dotenv.config({ path: '.env.local' })
 dotenv.config({ path: '.env' })
 
 import * as http from 'node:http'
+import { PDFParse } from 'pdf-parse'
 import { Telegraf, session, Markup, Context } from 'telegraf'
 import { createClient } from 'next-sanity'
 import { v2 as cloudinary } from 'cloudinary'
@@ -37,7 +38,10 @@ import {
   parseExcel,
   parsePDF,
   parseTextInput,
+  parseInvoiceRowsRich,
+  pdfNameToPosName,
   type ParsedProduct,
+  type InvoiceRow,
 } from './parse-product-doc'
 
 // ── Sanity client ─────────────────────────────────────────────────────────────
@@ -142,7 +146,7 @@ function isAuthorized(userId: number | undefined): boolean {
 // ── Session types ─────────────────────────────────────────────────────────────
 
 interface SessionData {
-  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description'
+  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm'
   pendingCreate?: ParsedProduct[]
   pendingCategories?: string[]
   pendingImageSlug?: string
@@ -155,6 +159,9 @@ interface SessionData {
   pendingSanityProductCategorySlug?: string
   pendingSanityProductCategoryName?: string
   pendingSanityProductPrice?: number
+  pendingInvoiceNewRows?: InvoiceRow[]
+  pendingInvoiceExchangeRate?: number
+  pendingInvoiceCategorySlug?: string
 }
 
 interface BotContext extends Context {
@@ -361,6 +368,11 @@ async function runSync(categorySlug?: string): Promise<SyncResult> {
 
   return { created, updated, skipped }
 }
+
+// ── Invoice price constants ───────────────────────────────────────────────────
+
+const INVOICE_SELLING_PRICE_NORMAL = 14_000
+const INVOICE_SELLING_PRICE_GLOSSY = 15_000
 
 // ── Format helpers ────────────────────────────────────────────────────────────
 
@@ -1378,6 +1390,83 @@ bot.action('confirm_sync_after_create', async ctx => {
   )
 })
 
+bot.action('confirm_invoice_create', async ctx => {
+  await ctx.answerCbQuery()
+
+  const newRows = ctx.session.pendingInvoiceNewRows ?? []
+  const rate = ctx.session.pendingInvoiceExchangeRate ?? 0
+  const categorySlug = ctx.session.pendingInvoiceCategorySlug ?? 'edge-tapes'
+  ctx.session = {}
+
+  if (newRows.length === 0 || rate <= 0) {
+    await ctx.reply('Session expired. Please send the PDF again.')
+    return
+  }
+
+  await ctx.reply(`✨ Creating ${newRows.length} product(s) in POS…`)
+
+  let pos: any
+  try {
+    pos = createPOSClientFromEnv()
+    await pos.login()
+  } catch (err: any) {
+    await ctx.reply(`❌ POS login failed: ${err.message ?? err}`)
+    return
+  }
+
+  const successes: string[] = []
+  const failures: string[] = []
+
+  for (const row of newRows) {
+    const costPrice  = Math.round(row.usdUnitPrice * rate)
+    const sellingPrice = row.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
+    try {
+      const result = await pos.createProduct({
+        name: row.posName,
+        costPrice,
+        sellingPrice,
+      })
+      successes.push(`✅ ${result.name} (SKU: ${result.sku})`)
+    } catch (err: any) {
+      failures.push(`❌ ${row.posName}: ${err.message ?? err}`)
+    }
+  }
+
+  let msg = `*Creation results:*\n\n`
+  if (successes.length > 0) msg += successes.join('\n') + '\n'
+  if (failures.length > 0) msg += '\n' + failures.join('\n') + '\n'
+  await sendLong(ctx, msg)
+
+  if (successes.length > 0) {
+    await ctx.reply(
+      `Sync the new products to the Sanity website?`,
+      Markup.inlineKeyboard([
+        Markup.button.callback(`🔄 Sync to website`, 'confirm_invoice_sync'),
+        Markup.button.callback('Skip', 'cancel_action'),
+      ])
+    )
+    // Store category for sync
+    ctx.session.pendingInvoiceCategorySlug = categorySlug
+  }
+})
+
+bot.action('confirm_invoice_sync', async ctx => {
+  await ctx.answerCbQuery()
+  const categorySlug = ctx.session.pendingInvoiceCategorySlug
+  ctx.session = {}
+
+  await ctx.reply(`🔄 Syncing new products to Sanity…`)
+  try {
+    const result = await runSync(categorySlug)
+    await ctx.reply(
+      `✅ *Sync complete!*\n\n✨ Created: ${result.created}\n🔄 Updated: ${result.updated}\n⚠️ Skipped: ${result.skipped}`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Sync failed: ${err.message ?? err}`)
+  }
+})
+
 bot.action('cancel_action', async ctx => {
   await ctx.answerCbQuery()
   ctx.session = {}
@@ -1567,6 +1656,42 @@ bot.on('text', async ctx => {
     return
   }
 
+  if (step === 'await_exchange_rate_for_invoice') {
+    const input = ctx.message.text.trim().replace(/[,_\s]/g, '')
+    const rate = parseFloat(input)
+
+    if (isNaN(rate) || rate <= 0) {
+      await ctx.reply(
+        'Please enter a valid exchange rate (numbers only, e.g. `1400`).',
+        { parse_mode: 'Markdown' }
+      )
+      return
+    }
+
+    const newRows = ctx.session.pendingInvoiceNewRows ?? []
+    ctx.session.pendingInvoiceExchangeRate = rate
+    ctx.session.step = 'await_invoice_confirm'
+
+    let msg = `💱 *Exchange rate: ₦${rate.toLocaleString()} / USD*\n\n`
+    msg += `*${newRows.length} products to be created in POS:*\n\n`
+    for (const r of newRows) {
+      const costPrice  = Math.round(r.usdUnitPrice * rate)
+      const sellPrice = r.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
+      msg += `• *${r.posName}*\n`
+      msg += `  Cost: ₦${costPrice.toLocaleString()} (US$${r.usdUnitPrice} × ${rate}) | Sell: ₦${sellPrice.toLocaleString()}\n\n`
+    }
+
+    await sendLong(ctx, msg)
+    await ctx.reply(
+      `Create these ${newRows.length} products in POS?`,
+      Markup.inlineKeyboard([
+        Markup.button.callback(`✅ Yes, create ${newRows.length}`, 'confirm_invoice_create'),
+        Markup.button.callback('❌ Cancel', 'cancel_action'),
+      ])
+    )
+    return
+  }
+
   if (step === 'await_product_text') {
     ctx.session.step = undefined
     const text = ctx.message.text
@@ -1679,19 +1804,97 @@ bot.on('document', async ctx => {
     const fileLink = await ctx.telegram.getFileLink(doc.file_id)
     const response = await fetch(fileLink.href)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const arrayBuffer = await response.arrayBuffer()
-    fileBuffer = Buffer.from(arrayBuffer)
+    fileBuffer = Buffer.from(await response.arrayBuffer())
   } catch (err: any) {
     await ctx.reply(`❌ Failed to download file: ${err.message ?? err}`)
     return
   }
 
+  // PDF: check if it's a supplier invoice first
+  if (ext === 'pdf') {
+    let rawText = ''
+    try {
+      const parser = new PDFParse({ data: fileBuffer })
+      const result = await parser.getText()
+      await parser.destroy()
+      rawText = result.text
+    } catch (err: any) {
+      await ctx.reply(`❌ Failed to read PDF: ${err.message ?? err}`)
+      return
+    }
+
+    const invoiceRows = parseInvoiceRowsRich(rawText)
+
+    if (invoiceRows.length > 0) {
+      // Invoice PDF flow
+      await ctx.reply(`🔍 Detected invoice format. Checking ${invoiceRows.length} products against POS…`)
+
+      let pos: any
+      try {
+        pos = createPOSClientFromEnv()
+        await pos.login()
+        const allPos = await pos.getProducts()
+        const posNameMap = new Map(allPos.map((p: any) => [p.parsedName.toLowerCase(), p]))
+
+        const existing: InvoiceRow[] = []
+        const newRows: InvoiceRow[] = []
+
+        for (const row of invoiceRows) {
+          if (posNameMap.has(row.posName.toLowerCase())) {
+            existing.push(row)
+          } else {
+            newRows.push(row)
+          }
+        }
+
+        if (newRows.length === 0) {
+          await ctx.reply(
+            `✅ All ${invoiceRows.length} products already exist in POS. Nothing to create.`,
+            { parse_mode: 'Markdown' }
+          )
+          ctx.session = {}
+          return
+        }
+
+        // Show the new products
+        let msg = `📋 *${existing.length} already in POS* — will be skipped\n`
+        msg += `🆕 *${newRows.length} new products* to be created:\n\n`
+        for (const r of newRows) {
+          msg += `• ${r.posName} (PDF: ${r.pdfName})\n`
+        }
+        msg += `\nWhat exchange rate *(NGN/USD)* should I use for purchase prices?\n`
+        msg += `_Example: type \`1400\` for ₦1,400 per USD_`
+
+        ctx.session.step = 'await_exchange_rate_for_invoice'
+        ctx.session.pendingInvoiceNewRows = newRows
+        ctx.session.pendingInvoiceCategorySlug = newRows[0]?.categorySlug ?? 'edge-tapes'
+
+        await sendLong(ctx, msg)
+        return
+      } catch (err: any) {
+        await ctx.reply(`❌ POS check failed: ${err.message ?? err}`)
+        ctx.session = {}
+        return
+      }
+    }
+
+    // Not invoice format — fall back to text parsing
+    let parsed: ParsedProduct[]
+    try {
+      parsed = await parsePDF(fileBuffer)
+    } catch (err: any) {
+      await ctx.reply("Couldn't parse this PDF. Please check the file format.")
+      return
+    }
+    await checkAndSummarise(ctx, parsed, `Parsed ${parsed.length} products from ${filename}`)
+    return
+  }
+
+  // CSV / Excel
   let parsed: ParsedProduct[]
   try {
     if (ext === 'csv') {
       parsed = parseCSV(fileBuffer.toString('utf-8'))
-    } else if (ext === 'pdf') {
-      parsed = await parsePDF(fileBuffer)
     } else {
       parsed = parseExcel(fileBuffer)
     }
@@ -1699,7 +1902,6 @@ bot.on('document', async ctx => {
     await ctx.reply("Couldn't parse this file. Please send a CSV, Excel, or PDF file.")
     return
   }
-
   await checkAndSummarise(ctx, parsed, `Parsed ${parsed.length} products from ${filename}`)
 })
 

@@ -1,6 +1,67 @@
 import * as XLSX from 'xlsx'
 import { PDFParse } from 'pdf-parse'
 
+export interface InvoiceRow {
+  pdfName: string
+  posName: string
+  usdUnitPrice: number
+  face: 'Matt' | 'Embossed' | 'Glossy' | 'Unknown'
+  categorySlug: string
+}
+
+export const INVOICE_SPELLING_FIXES: Record<string, string> = {
+  'Cappucino':   'Cappuccino',
+  'Soilder':     'Soldier',
+  'Zebrono':     'Zebrano',
+  'Sliver Grey': 'Silver Grey',
+  'Redrose':     'Red Rose',
+  'Whiet':       'White',
+  'Asurmun':     'Asunranmu',
+  'Masonai4':    'Masonia4',
+  'Hc059':       'HC059',
+  'Color40':     'Color 40',
+}
+
+export const INVOICE_PARENTHETICAL_NAMES: Record<string, string> = {
+  'spider':      'Spider',
+  'carpet':      'Carpet',
+  'dark floral': 'Dark Floral',
+  'basket':      'Basket',
+}
+
+export function pdfNameToPosName(rawName: string): string {
+  const isGlossy = /Glossy\s*$/i.test(rawName)
+
+  // Check for parenthetical special names first
+  const parenMatch = rawName.match(/[([（]([^)\]）]+)[)\]）]/)
+  if (parenMatch) {
+    const paren = parenMatch[1].trim().toLowerCase()
+    for (const [key, label] of Object.entries(INVOICE_PARENTHETICAL_NAMES)) {
+      if (paren.includes(key)) {
+        return isGlossy ? `${label} 48MM Gloss` : `${label} 48MM`
+      }
+    }
+  }
+
+  // Strip face suffix and parenthetical
+  let color = rawName
+    .replace(/\s*[([（][^)\]）]*[)\]）]/g, '')
+    .replace(/\s+Glossy\s*$/i, '')
+    .replace(/\s+Matt\s*$/i, '')
+    .replace(/\s+Embossed\s*$/i, '')
+    .trim()
+
+  // Bare numeric codes → "Color XXXX"
+  color = color.replace(/^(\d{3,5})$/, 'Color $1')
+
+  // Apply spelling fixes
+  for (const [wrong, right] of Object.entries(INVOICE_SPELLING_FIXES)) {
+    color = color.replace(new RegExp(`\\b${wrong}\\b`, 'gi'), right)
+  }
+
+  return isGlossy ? `${color} 48MM Gloss` : `${color} 48MM`
+}
+
 export interface ParsedProduct {
   name: string
   categorySlug: string
@@ -269,6 +330,66 @@ function toTitleCase(str: string): string {
     .split(' ')
     .map(w => w.length > 0 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w)
     .join(' ')
+}
+
+export function parseInvoiceRowsRich(text: string): InvoiceRow[] {
+  const lines = text.split('\n')
+
+  let contextCategory = ''
+  for (const line of lines) {
+    if (/\d+\.?\d*\s*[*×xX]\s*\d+\s*MM/i.test(line.replace(/\t/g, ' '))) {
+      contextCategory = 'edge-tapes'
+      break
+    }
+  }
+
+  const results: InvoiceRow[] = []
+
+  for (const line of lines) {
+    if (!line.trim()) continue
+    const parts = line.split('\t').map(p => p.trim()).filter(Boolean)
+    if (parts.length < 7) continue
+    if (!/^\d+$/.test(parts[0])) continue
+    const rowNum = parseInt(parts[0])
+    if (rowNum < 1 || rowNum > 9999) continue
+
+    let right = parts.length - 1
+    const usdValues: number[] = []
+    while (right > 0 && usdValues.length < 2 && /^US\$[\d.,]+$/i.test(parts[right])) {
+      usdValues.unshift(parseFloat(parts[right].replace(/[^0-9.]/g, '')))
+      right--
+    }
+    if (usdValues.length === 0) continue
+
+    let numCount = 0
+    while (right > 0 && numCount < 3 && /^\d+$/.test(parts[right])) {
+      right--
+      numCount++
+    }
+
+    if (right < 1) continue
+    const nameParts = parts.slice(1, right + 1)
+    const rawName = nameParts.join(' ').trim()
+    if (!rawName || rawName.length < 2) continue
+
+    // Title-case the raw name
+    const pdfName = rawName.split(' ')
+      .map(w => w.length > 0 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w)
+      .join(' ')
+
+    const usdUnitPrice = Math.min(...usdValues)
+    const face: InvoiceRow['face'] = /Glossy\s*$/i.test(pdfName) ? 'Glossy'
+      : /Matt\s*$/i.test(pdfName) ? 'Matt'
+      : /Embossed\s*$/i.test(pdfName) ? 'Embossed'
+      : 'Unknown'
+
+    const posName = pdfNameToPosName(pdfName)
+    const cat = contextCategory || inferCategoryFromName(rawName)
+
+    results.push({ pdfName, posName, usdUnitPrice, face, categorySlug: cat })
+  }
+
+  return results
 }
 
 function parseInvoiceRows(text: string): ParsedProduct[] {
