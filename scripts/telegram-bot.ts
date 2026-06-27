@@ -32,7 +32,7 @@ import { PDFParse } from 'pdf-parse'
 import { Telegraf, session, Markup, Context } from 'telegraf'
 import { createClient } from 'next-sanity'
 import { v2 as cloudinary } from 'cloudinary'
-import { POSClient, createPOSClientFromEnv, type POSProduct } from './pos-client'
+import { POSClient, createPOSClientFromEnv, type POSProduct, type PurchaseLine, type CreatePurchaseInput } from './pos-client'
 import {
   parseCSV,
   parseExcel,
@@ -145,7 +145,7 @@ function isAuthorized(userId: number | undefined): boolean {
 // ── Session types ─────────────────────────────────────────────────────────────
 
 interface SessionData {
-  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm'
+  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm' | 'await_purchase_file' | 'await_purchase_supplier' | 'await_purchase_rate' | 'await_purchase_status' | 'await_purchase_shipping' | 'await_purchase_shipping_label' | 'await_purchase_confirm'
   pendingCreate?: ParsedProduct[]
   pendingCategories?: string[]
   pendingImageSlug?: string
@@ -161,6 +161,21 @@ interface SessionData {
   pendingInvoiceNewRows?: InvoiceRow[]
   pendingInvoiceExchangeRate?: number
   pendingInvoiceCategorySlugs?: string[]
+  pendingPurchaseLines?: Array<{
+    posName: string
+    productId: string
+    variationId: string
+    unitId: string
+    quantity: number
+    usdUnitPrice: number
+    face: 'Matt' | 'Embossed' | 'Glossy' | 'Unknown'
+  }>
+  pendingPurchaseSupplierId?: string
+  pendingPurchaseSupplierName?: string
+  pendingPurchaseExchangeRate?: number
+  pendingPurchaseStatus?: 'ordered' | 'received' | 'pending'
+  pendingPurchaseShipping?: number
+  pendingPurchaseShippingLabel?: string
 }
 
 interface BotContext extends Context {
@@ -373,6 +388,14 @@ async function runSync(categorySlug?: string): Promise<SyncResult> {
 const INVOICE_SELLING_PRICE_NORMAL = 14_000
 const INVOICE_SELLING_PRICE_GLOSSY = 15_000
 
+// ── Suppliers (numeric DB IDs from POS /contacts) ────────────────────────────
+
+const SUPPLIERS = [
+  { id: '59730', name: 'Mr Adward Shouguang' },
+  { id: '91674', name: 'Miss Susan Sunstar' },
+  { id: '56902', name: 'Mr Soji Soyoye' },
+]
+
 // ── Format helpers ────────────────────────────────────────────────────────────
 
 function formatPrice(price: number | undefined): string {
@@ -468,6 +491,134 @@ async function checkAndSummarise(
   )
 }
 
+// ── Purchase order helpers ────────────────────────────────────────────────────
+
+async function handlePurchaseFile(ctx: BotContext, fileBuffer: Buffer, ext: string): Promise<void> {
+  if (ext !== 'pdf') {
+    await ctx.reply('Only PDF supplier invoices are supported for purchase orders right now.')
+    ctx.session = {}
+    return
+  }
+
+  let rawText = ''
+  try {
+    const parser = new PDFParse({ data: fileBuffer })
+    const result = await parser.getText()
+    await parser.destroy()
+    rawText = result.text
+  } catch (err: any) {
+    await ctx.reply(`❌ Failed to read PDF: ${err.message ?? err}`)
+    ctx.session = {}
+    return
+  }
+
+  const invoiceRows = parseInvoiceRowsRich(rawText)
+  if (invoiceRows.length === 0) {
+    await ctx.reply(
+      "❌ Couldn't detect invoice rows in this PDF.\n\nMake sure it's a supplier PI with tab-separated columns (row number, product name, quantities, US$ prices)."
+    )
+    ctx.session = {}
+    return
+  }
+
+  await ctx.reply(`✅ Found ${invoiceRows.length} product rows. Looking up in POS…`)
+
+  let pos: POSClient
+  try {
+    pos = createPOSClientFromEnv()
+    await pos.login()
+  } catch (err: any) {
+    await ctx.reply(`❌ POS login failed: ${err.message ?? err}`)
+    ctx.session = {}
+    return
+  }
+
+  const found: NonNullable<SessionData['pendingPurchaseLines']> = []
+  const missing: string[] = []
+
+  for (const row of invoiceRows) {
+    const match = await pos.searchProductForPurchase(row.posName)
+    if (match) {
+      found.push({
+        posName: row.posName,
+        productId: match.productId,
+        variationId: match.variationId,
+        unitId: row.categorySlug === 'edge-tapes' ? '2097' : '2094',
+        quantity: row.quantity,
+        usdUnitPrice: row.usdUnitPrice,
+        face: row.face,
+      })
+    } else {
+      missing.push(row.posName)
+    }
+  }
+
+  if (missing.length > 0) {
+    let msg = `❌ *${missing.length} product(s) not found in POS — cannot create purchase:*\n\n`
+    msg += missing.map(n => `• ${n}`).join('\n')
+    msg += `\n\nUse /add with this PDF to create them first, then retry /purchase.`
+    await sendLong(ctx, msg)
+    ctx.session = {}
+    return
+  }
+
+  ctx.session.pendingPurchaseLines = found
+  ctx.session.step = 'await_purchase_supplier'
+
+  await ctx.reply(
+    `✅ All ${found.length} products confirmed in POS.\n\n*Which supplier is this invoice from?*`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.reply(
+    'Select supplier:',
+    Markup.inlineKeyboard([
+      ...SUPPLIERS.map(s => [Markup.button.callback(s.name, `purchase_supplier_${s.id}`)]),
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
+    ])
+  )
+}
+
+async function showPurchaseSummary(ctx: BotContext): Promise<void> {
+  const lines    = ctx.session.pendingPurchaseLines ?? []
+  const rate     = ctx.session.pendingPurchaseExchangeRate ?? 0
+  const supplier = ctx.session.pendingPurchaseSupplierName ?? ''
+  const status   = ctx.session.pendingPurchaseStatus ?? 'ordered'
+  const shipping = ctx.session.pendingPurchaseShipping ?? 0
+  const shLabel  = ctx.session.pendingPurchaseShippingLabel ?? ''
+
+  let subtotal = 0
+  let msg = `📋 *Purchase Order Summary*\n\n`
+  msg += `*Supplier:* ${supplier}\n`
+  msg += `*Status:* ${status}\n`
+  msg += `*Rate:* ₦${rate.toLocaleString()}/USD\n\n`
+  msg += `*Products (${lines.length}):*\n`
+
+  for (const line of lines) {
+    const cost     = Math.round(line.usdUnitPrice * rate)
+    const sell     = line.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
+    const lineTotal = cost * line.quantity
+    subtotal += lineTotal
+    msg += `• *${line.posName}* — ${line.quantity} × ₦${cost.toLocaleString()} = ₦${lineTotal.toLocaleString()} (sell ₦${sell.toLocaleString()})\n`
+  }
+
+  msg += `\n*Subtotal:* ₦${subtotal.toLocaleString()}\n`
+  if (shipping > 0) {
+    msg += `*Shipping (${shLabel || 'Shipping'}):* ₦${shipping.toLocaleString()}\n`
+  }
+  msg += `*Grand total:* ₦${(subtotal + shipping).toLocaleString()}`
+
+  await sendLong(ctx, msg)
+  await ctx.reply(
+    `Create this purchase order in POS?`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback('✅ Create Purchase Order', 'confirm_purchase_create'),
+        Markup.button.callback('❌ Cancel', 'cancel_action'),
+      ],
+    ])
+  )
+}
+
 // ── Bot setup ─────────────────────────────────────────────────────────────────
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
@@ -502,6 +653,7 @@ bot.command('start', async ctx => {
     `I manage your POS inventory and sync products to the Modish Standard website.\n\n` +
     `*— Add to POS (tracked inventory):*\n` +
     `/add — Add products to POS via text or CSV/Excel file\n` +
+    `/purchase — Create a purchase order from a supplier invoice PDF\n` +
     `/sync [category] — Push POS products → Sanity website\n\n` +
     `*— Add to Sanity directly (no POS):*\n` +
     `/addsanity <name> — Add a product directly to the website catalog\n` +
@@ -1273,6 +1425,19 @@ bot.command('addcategory', async ctx => {
   )
 })
 
+// ── /purchase ─────────────────────────────────────────────────────────────────
+
+bot.command('purchase', async ctx => {
+  ctx.session = { step: 'await_purchase_file' }
+  await ctx.reply(
+    `🧾 *Create Purchase Order*\n\n` +
+    `Send the supplier invoice PDF.\n\n` +
+    `All products must already exist in POS — use /add first if needed.\n\n` +
+    `Or /cancel to abort.`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
 // ── /add ──────────────────────────────────────────────────────────────────────
 
 bot.command('add', async ctx => {
@@ -1483,6 +1648,96 @@ bot.action('confirm_invoice_sync', async ctx => {
     await ctx.reply(`✅ *Sync complete!*\n\n` + results.join('\n'), { parse_mode: 'Markdown' })
   } else {
     await ctx.reply('Nothing to sync.')
+  }
+})
+
+bot.action(/^purchase_supplier_(\d+)$/, async ctx => {
+  await ctx.answerCbQuery()
+  const supplierId = ctx.match[1]
+  const supplier = SUPPLIERS.find(s => s.id === supplierId)
+  if (!supplier || ctx.session.step !== 'await_purchase_supplier') return
+
+  ctx.session.pendingPurchaseSupplierId = supplierId
+  ctx.session.pendingPurchaseSupplierName = supplier.name
+  ctx.session.step = 'await_purchase_rate'
+
+  await ctx.reply(
+    `✅ Supplier: *${supplier.name}*\n\nWhat exchange rate *(NGN/USD)* should I use?\n_Example: type \`1400\` for ₦1,400 per USD_`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+bot.action(/^purchase_status_(ordered|received|pending)$/, async ctx => {
+  await ctx.answerCbQuery()
+  const status = ctx.match[1] as 'ordered' | 'received' | 'pending'
+  if (ctx.session.step !== 'await_purchase_status') return
+
+  ctx.session.pendingPurchaseStatus = status
+  ctx.session.step = 'await_purchase_shipping'
+
+  await ctx.reply(
+    `✅ Status: *${status}*\n\nShipping charges in Naira? (type \`0\` to skip)`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+bot.action('confirm_purchase_create', async ctx => {
+  await ctx.answerCbQuery()
+
+  const lines      = ctx.session.pendingPurchaseLines ?? []
+  const rate       = ctx.session.pendingPurchaseExchangeRate ?? 0
+  const supplierId = ctx.session.pendingPurchaseSupplierId ?? ''
+  const supplierName = ctx.session.pendingPurchaseSupplierName ?? ''
+  const status     = ctx.session.pendingPurchaseStatus ?? 'ordered'
+  const shipping   = ctx.session.pendingPurchaseShipping ?? 0
+  const shLabel    = ctx.session.pendingPurchaseShippingLabel ?? ''
+  ctx.session = {}
+
+  if (lines.length === 0 || rate <= 0 || !supplierId) {
+    await ctx.reply('Session expired. Please start again with /purchase.')
+    return
+  }
+
+  await ctx.reply('✨ Creating purchase order in POS…')
+
+  let pos: POSClient
+  try {
+    pos = createPOSClientFromEnv()
+    await pos.login()
+  } catch (err: any) {
+    await ctx.reply(`❌ POS login failed: ${err.message ?? err}`)
+    return
+  }
+
+  const purchaseLines: PurchaseLine[] = lines.map(line => ({
+    productId:     line.productId,
+    variationId:   line.variationId,
+    quantity:      line.quantity,
+    unitId:        line.unitId,
+    purchasePrice: Math.round(line.usdUnitPrice * rate),
+    sellingPrice:  line.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL,
+  }))
+
+  try {
+    const result = await pos.createPurchase({
+      contactId:       supplierId,
+      status,
+      shippingCharges: shipping,
+      shippingDetails: shLabel,
+      lines:           purchaseLines,
+    })
+    const posUrl = (process.env.INVENTORY_APP_URL || 'https://pos.virtualrx.com.ng').replace(/\/$/, '')
+    await ctx.reply(
+      `✅ *Purchase order created!*\n\n` +
+      `*Ref:* ${result.refNo}\n` +
+      `*Supplier:* ${supplierName}\n` +
+      `*Status:* ${status}\n` +
+      `*Products:* ${lines.length}\n` +
+      `*View:* ${posUrl}/purchases/${result.purchaseId}`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Failed to create purchase: ${err.message ?? err}`)
   }
 })
 
@@ -1718,6 +1973,84 @@ bot.on('text', async ctx => {
     return
   }
 
+  if (step === 'await_purchase_file') {
+    await ctx.reply('Please send the supplier invoice PDF, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_supplier') {
+    await ctx.reply('Please select a supplier using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_rate') {
+    const input = ctx.message.text.trim().replace(/[,_\s]/g, '')
+    const rate = parseFloat(input)
+    if (isNaN(rate) || rate <= 0) {
+      await ctx.reply(
+        'Please enter a valid exchange rate (numbers only, e.g. `1400`).',
+        { parse_mode: 'Markdown' }
+      )
+      return
+    }
+    ctx.session.pendingPurchaseExchangeRate = rate
+    ctx.session.step = 'await_purchase_status'
+    await ctx.reply(
+      `✅ Rate: ₦${rate.toLocaleString()}/USD\n\nWhat is the purchase status?`,
+      { parse_mode: 'Markdown' }
+    )
+    await ctx.reply(
+      'Select status:',
+      Markup.inlineKeyboard([[
+        Markup.button.callback('📦 Ordered',  'purchase_status_ordered'),
+        Markup.button.callback('✅ Received', 'purchase_status_received'),
+        Markup.button.callback('⏳ Pending',  'purchase_status_pending'),
+      ]])
+    )
+    return
+  }
+
+  if (step === 'await_purchase_status') {
+    await ctx.reply('Please select a status using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_shipping') {
+    const input = ctx.message.text.trim().replace(/[₦,\s]/g, '')
+    const amount = parseFloat(input)
+    if (isNaN(amount) || amount < 0) {
+      await ctx.reply('Please enter a valid amount (or `0` to skip).', { parse_mode: 'Markdown' })
+      return
+    }
+    ctx.session.pendingPurchaseShipping = amount
+    if (amount > 0) {
+      ctx.session.step = 'await_purchase_shipping_label'
+      await ctx.reply(
+        `✅ Shipping: ₦${amount.toLocaleString()}\n\nWhat label for the shipping? (e.g. \`Clearing\`, \`Freight\`) Or type \`skip\`.`,
+        { parse_mode: 'Markdown' }
+      )
+    } else {
+      ctx.session.step = 'await_purchase_confirm'
+      await showPurchaseSummary(ctx)
+    }
+    return
+  }
+
+  if (step === 'await_purchase_shipping_label') {
+    const label = ctx.message.text.trim()
+    ctx.session.pendingPurchaseShippingLabel = label.toLowerCase() === 'skip' ? '' : label
+    ctx.session.step = 'await_purchase_confirm'
+    await showPurchaseSummary(ctx)
+    return
+  }
+
+  if (step === 'await_purchase_confirm') {
+    await ctx.reply(
+      'Please use the buttons above to confirm or cancel, or type /cancel to abort.'
+    )
+    return
+  }
+
   if (step === 'await_product_text') {
     ctx.session.step = undefined
     const text = ctx.message.text
@@ -1833,6 +2166,12 @@ bot.on('document', async ctx => {
     fileBuffer = Buffer.from(await response.arrayBuffer())
   } catch (err: any) {
     await ctx.reply(`❌ Failed to download file: ${err.message ?? err}`)
+    return
+  }
+
+  // Route to purchase order flow
+  if (ctx.session.step === 'await_purchase_file') {
+    await handlePurchaseFile(ctx, fileBuffer, ext)
     return
   }
 

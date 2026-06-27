@@ -27,6 +27,25 @@ export interface CreateProductInput {
   unitId?: string
 }
 
+export interface PurchaseLine {
+  productId: string
+  variationId: string
+  quantity: number
+  unitId: string
+  purchasePrice: number    // NGN cost price per unit
+  sellingPrice: number     // NGN selling price per unit
+}
+
+export interface CreatePurchaseInput {
+  contactId: string                                   // numeric DB ID of supplier
+  status: 'ordered' | 'received' | 'pending'
+  locationId?: string
+  refNo?: string
+  shippingCharges?: number
+  shippingDetails?: string
+  lines: PurchaseLine[]
+}
+
 const BOARD_CATEGORY_ID = '4529'
 const EDGE_TAPE_CATEGORY_ID = '4137'
 const BOARD_UNIT_ID = '2094'
@@ -176,6 +195,119 @@ export class POSClient {
     }
 
     return { sku: '', name: input.name }
+  }
+
+  async searchProductForPurchase(
+    name: string
+  ): Promise<{ productId: string; variationId: string } | null> {
+    // No location_id — products may live in any location (existing stock is in loc 928)
+    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(name)}`
+    const res = await fetch(url, {
+      headers: {
+        Cookie: this.cookieHeader(),
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    })
+    if (!res.ok) return null
+    const results = await res.json() as Array<{
+      id: string; text: string; product_id: string; variation_id: string
+    }>
+    if (results.length === 0) return null
+    // Result text format: "Product Name - product_id" — strip the suffix before comparing
+    const nameLower = name.toLowerCase()
+    const stripSuffix = (t: string) => t.replace(/\s+-\s+\d+$/, '').toLowerCase()
+    const exact = results.find(r => stripSuffix(r.text) === nameLower)
+    if (!exact) return null
+    return { productId: String(exact.product_id), variationId: String(exact.variation_id) }
+  }
+
+  async createPurchase(input: CreatePurchaseInput): Promise<{ refNo: string; purchaseId: string }> {
+    const csrf = await this.getCsrf('/purchases/create')
+    const locationId = input.locationId ?? '952'
+
+    const now = new Date()
+    const day    = String(now.getDate()).padStart(2, '0')
+    const month  = String(now.getMonth() + 1).padStart(2, '0')
+    const year   = now.getFullYear()
+    const hours  = String(now.getHours()).padStart(2, '0')
+    const mins   = String(now.getMinutes()).padStart(2, '0')
+    const transactionDate = `${day}-${month}-${year} ${hours}:${mins}`
+
+    const totalBeforeTax = input.lines.reduce(
+      (sum, l) => sum + l.purchasePrice * l.quantity, 0
+    )
+    const shippingCharges = input.shippingCharges ?? 0
+    const finalTotal = totalBeforeTax + shippingCharges
+
+    const body = new URLSearchParams({
+      _token:           csrf,
+      contact_id:       input.contactId,
+      ref_no:           input.refNo ?? '',
+      transaction_date: transactionDate,
+      status:           input.status,
+      location_id:      locationId,
+      exchange_rate:    '1',
+      pay_term_number:  '',
+      pay_term_type:    '',
+      discount_type:    '',
+      discount_amount:  '0',
+      tax_id:           '',
+      shipping_charges: String(shippingCharges),
+      shipping_details: input.shippingDetails ?? '',
+      additional_notes: '',
+      total_before_tax: totalBeforeTax.toFixed(2),
+      final_total:      finalTotal.toFixed(2),
+    })
+
+    input.lines.forEach((line, i) => {
+      body.append(`purchases[${i}][product_id]`,          line.productId)
+      body.append(`purchases[${i}][variation_id]`,        line.variationId)
+      body.append(`purchases[${i}][quantity]`,            String(line.quantity))
+      body.append(`purchases[${i}][product_unit_id]`,     line.unitId)
+      body.append(`purchases[${i}][pp_without_discount]`, String(line.purchasePrice))
+      body.append(`purchases[${i}][discount_percent]`,    '0.00')
+      body.append(`purchases[${i}][purchase_price]`,      String(line.purchasePrice))
+      body.append(`purchases[${i}][purchase_line_tax_id]`, '')
+      body.append(`purchases[${i}][item_tax]`,            '0')
+      body.append(`purchases[${i}][purchase_price_inc_tax]`, String(line.purchasePrice))
+      body.append(`purchases[${i}][profit_percent]`,      '48')
+      body.append(`purchases[${i}][default_sell_price]`,  String(line.sellingPrice))
+    })
+
+    const res = await fetch(`${this.baseUrl}/purchases`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie: this.cookieHeader(),
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body,
+      redirect: 'manual',
+    })
+    this.updateJar(res.headers)
+
+    const location = res.headers.get('location') ?? ''
+    if (res.status !== 302 || !location.includes('/purchases')) {
+      throw new Error(`createPurchase failed — status ${res.status}, location: ${location || '(none)'}`)
+    }
+
+    const purchaseId = location.match(/\/purchases\/(\d+)/)?.[1] ?? ''
+
+    // Fetch the ref_no from the edit page
+    let refNo = purchaseId ? `#${purchaseId}` : 'auto-generated'
+    if (purchaseId) {
+      try {
+        const editRes = await fetch(`${this.baseUrl}/purchases/${purchaseId}/edit`, {
+          headers: { Cookie: this.cookieHeader() },
+        })
+        const html = await editRes.text()
+        const m = html.match(/name="ref_no"[^>]*value="([^"]+)"/)
+          ?? html.match(/value="([^"]+)"[^>]*name="ref_no"/)
+        if (m) refNo = m[1]
+      } catch { /* use #id fallback */ }
+    }
+
+    return { refNo, purchaseId }
   }
 
   async checkProductsByName(names: string[]): Promise<{ found: POSProduct[]; missing: string[] }> {

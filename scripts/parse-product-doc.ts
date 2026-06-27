@@ -4,6 +4,7 @@ import { PDFParse } from 'pdf-parse'
 export interface InvoiceRow {
   pdfName: string
   posName: string
+  quantity: number
   usdUnitPrice: number
   face: 'Matt' | 'Embossed' | 'Glossy' | 'Unknown'
   categorySlug: string
@@ -364,11 +365,13 @@ export function parseInvoiceRowsRich(text: string): InvoiceRow[] {
     }
     if (usdValues.length === 0) continue
 
-    let numCount = 0
-    while (right > 0 && numCount < 3 && /^\d+$/.test(parts[right])) {
+    const qtyValues: number[] = []
+    while (right > 0 && qtyValues.length < 3 && /^\d+$/.test(parts[right])) {
+      qtyValues.unshift(parseInt(parts[right], 10))
       right--
-      numCount++
     }
+    // Last (rightmost) numeric column = total rolls / total units
+    const quantity = qtyValues.length > 0 ? qtyValues[qtyValues.length - 1] : 1
 
     if (right < 1) continue
     const nameParts = parts.slice(1, right + 1)
@@ -389,7 +392,7 @@ export function parseInvoiceRowsRich(text: string): InvoiceRow[] {
     const posName = pdfNameToPosName(pdfName, tapeSize)
     const cat = contextCategory || inferCategoryFromName(rawName)
 
-    results.push({ pdfName, posName, usdUnitPrice, face, categorySlug: cat })
+    results.push({ pdfName, posName, quantity, usdUnitPrice, face, categorySlug: cat })
   }
 
   return results
