@@ -57,6 +57,13 @@ function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, '').trim()
 }
 
+// POS search results return "Product Name - <numeric-id>"; these strip that trailer.
+const stripPOSSuffix = (t: string) => t.replace(/\s+-\s+\d+$/, '').toLowerCase()
+const originalPOSName = (t: string) => t.replace(/\s+-\s+\d+$/, '').trim()
+
+// Keep in sync with TAPE_SIZE_SUFFIX_RE in parse-product-doc.ts
+const TAPE_SIZE_SUFFIX_RE = /^(.+?)\s+\d+MM(?:\s+Gloss)?$/i
+
 function parseStockQty(raw: string): number {
   return parseFloat(raw.match(/^([\d.]+)/)?.[1] ?? '0')
 }
@@ -216,12 +223,51 @@ export class POSClient {
       id: string; text: string; product_id: string; variation_id: string
     }>
     if (results.length === 0) return null
-    // Result text format: "Product Name - product_id" — strip the suffix before comparing
     const nameLower = name.toLowerCase()
-    const stripSuffix = (t: string) => t.replace(/\s+-\s+\d+$/, '').toLowerCase()
-    const exact = results.find(r => stripSuffix(r.text) === nameLower)
+    const exact = results.find(r => stripPOSSuffix(r.text) === nameLower)
     if (!exact) return null
     return { productId: String(exact.product_id), variationId: String(exact.variation_id) }
+  }
+
+  async findProductForPurchase(
+    name: string,
+    locationId?: string
+  ): Promise<{
+    exact: { productId: string; variationId: string } | null
+    nearMatches: Array<{ productId: string; variationId: string; posName: string }>
+  }> {
+    // Exact-match leg — delegate to the existing method to avoid duplication
+    const exactResult = await this.searchProductForPurchase(name, locationId)
+    if (exactResult) return { exact: exactResult, nearMatches: [] }
+
+    // No exact match — look for near-matches via base color (strip trailing size suffix)
+    const baseColorMatch = name.match(TAPE_SIZE_SUFFIX_RE)
+    if (!baseColorMatch) return { exact: null, nearMatches: [] }
+    const baseColor = baseColorMatch[1].trim()
+
+    const locationSuffix = locationId ? `&location_id=${encodeURIComponent(locationId)}` : ''
+    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(baseColor)}${locationSuffix}`
+    const res = await fetch(url, {
+      headers: { Cookie: this.cookieHeader(), 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    if (!res.ok) return { exact: null, nearMatches: [] }
+    const baseResults = await res.json() as Array<{ id: string; text: string; product_id: string; variation_id: string }>
+
+    const nameLower = name.toLowerCase()
+    const baseColorLower = baseColor.toLowerCase()
+    const nearMatches = baseResults
+      .map(r => ({ r, cleanLower: stripPOSSuffix(r.text), cleanOrig: originalPOSName(r.text) }))
+      .filter(({ cleanLower }) =>
+        cleanLower !== nameLower &&
+        (cleanLower === baseColorLower || cleanLower.startsWith(baseColorLower + ' '))
+      )
+      .map(({ r, cleanOrig }) => ({
+        productId: String(r.product_id),
+        variationId: String(r.variation_id),
+        posName: cleanOrig,
+      }))
+
+    return { exact: null, nearMatches }
   }
 
   async createPurchase(input: CreatePurchaseInput): Promise<{ refNo: string; purchaseId: string }> {

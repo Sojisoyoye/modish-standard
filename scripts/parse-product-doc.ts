@@ -10,6 +10,8 @@ export interface InvoiceRow {
   categorySlug: string
 }
 
+export const TAPE_SIZE_SUFFIX_RE = /^(.+?)\s+\d+MM(?:\s+Gloss)?$/i
+
 export const INVOICE_SPELLING_FIXES: Record<string, string> = {
   'Cappucino':   'Cappuccino',
   'Soilder':     'Soldier',

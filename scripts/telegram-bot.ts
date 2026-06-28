@@ -39,6 +39,7 @@ import {
   parseTextInput,
   parseInvoiceRowsRich,
   pdfNameToPosName,
+  TAPE_SIZE_SUFFIX_RE,
   type ParsedProduct,
   type InvoiceRow,
 } from './parse-product-doc'
@@ -145,7 +146,7 @@ function isAuthorized(userId: number | undefined): boolean {
 // ── Session types ─────────────────────────────────────────────────────────────
 
 interface SessionData {
-  step?: 'await_product_text' | 'await_add_location' | 'await_add_category' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_invoice_location' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm' | 'await_purchase_file' | 'await_purchase_missing_confirm' | 'await_purchase_location' | 'await_purchase_supplier' | 'await_purchase_rate' | 'await_purchase_status' | 'await_purchase_shipping' | 'await_purchase_shipping_label' | 'await_purchase_confirm'
+  step?: 'await_product_text' | 'await_add_location' | 'await_add_category' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_invoice_location' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm' | 'await_purchase_file' | 'await_purchase_prelookup_location' | 'await_purchase_missing_confirm' | 'await_purchase_disambig' | 'await_purchase_supplier' | 'await_purchase_rate' | 'await_purchase_status' | 'await_purchase_shipping' | 'await_purchase_shipping_label' | 'await_purchase_confirm' | 'await_invoice_disambig'
   pendingCreate?: ParsedProduct[]
   pendingCategories?: string[]
   pendingImageSlug?: string
@@ -170,6 +171,7 @@ interface SessionData {
     usdUnitPrice: number
     face: 'Matt' | 'Embossed' | 'Glossy' | 'Unknown'
   }>
+  pendingPurchaseInvoiceRows?: InvoiceRow[]
   pendingPurchaseMissingRows?: InvoiceRow[]
   pendingPurchaseNeedsCreate?: boolean
   pendingInvoiceLocationId?: string
@@ -182,6 +184,14 @@ interface SessionData {
   pendingPurchaseStatus?: 'ordered' | 'received' | 'pending'
   pendingPurchaseShipping?: number
   pendingPurchaseShippingLabel?: string
+  pendingPurchaseDisambigQueue?: Array<{
+    row: InvoiceRow
+    candidates: Array<{ productId: string; variationId: string; posName: string }>
+  }>
+  pendingInvoiceDisambigQueue?: Array<{
+    row: InvoiceRow
+    candidates: Array<{ posName: string }>
+  }>
 }
 
 interface BotContext extends Context {
@@ -433,6 +443,61 @@ async function sendLong(ctx: BotContext, text: string): Promise<void> {
   }
 }
 
+// ── Disambiguation helpers ────────────────────────────────────────────────────
+
+function buildDisambigMsg(
+  row: InvoiceRow,
+  candidates: Array<{ posName: string }>,
+  remaining: number,
+  notFoundText: string,
+  multiMatchFooter: string,
+): string {
+  let msg = `⚠️ *"${row.posName}"* ${notFoundText}`
+  if (remaining > 1) msg += ` _(${remaining} to resolve)_`
+  msg += '\n\n'
+  if (candidates.length === 1) {
+    msg += `Near match found:\n• *${candidates[0].posName}*\n\n`
+    msg += `Is this the same product? Or create *"${row.posName}"* as a new POS entry?`
+  } else {
+    msg += `Near matches found:\n`
+    candidates.forEach((c, i) => { msg += `${i + 1}. *${c.posName}*\n` })
+    msg += `\n${multiMatchFooter}`
+  }
+  return msg
+}
+
+async function showNextPurchaseDisambig(ctx: BotContext): Promise<void> {
+  const queue = ctx.session.pendingPurchaseDisambigQueue ?? []
+  if (queue.length === 0) return
+  const { row, candidates } = queue[0]
+  const msg = buildDisambigMsg(row, candidates, queue.length,
+    'not found in POS.',
+    'Which existing product matches, or create a new one?')
+  await sendLong(ctx, msg)
+  const buttons = [
+    ...candidates.map((c, i) => [Markup.button.callback(`✅ Use "${c.posName}"`, `pur_disambig_use_${i}`)]),
+    [Markup.button.callback(`🆕 Create "${row.posName}" (new)`, 'pur_disambig_create')],
+    [Markup.button.callback('❌ Cancel', 'cancel_action')],
+  ]
+  await ctx.reply('Choose:', Markup.inlineKeyboard(buttons))
+}
+
+async function showNextInvoiceDisambig(ctx: BotContext): Promise<void> {
+  const queue = ctx.session.pendingInvoiceDisambigQueue ?? []
+  if (queue.length === 0) return
+  const { row, candidates } = queue[0]
+  const msg = buildDisambigMsg(row, candidates, queue.length,
+    'not found exactly in POS.',
+    'If any of these is the same product, skip creation. Otherwise create a new entry.')
+  await sendLong(ctx, msg)
+  const buttons = [
+    [Markup.button.callback('✅ Use existing (skip creation)', 'inv_disambig_skip')],
+    [Markup.button.callback(`🆕 Create "${row.posName}" (new)`, 'inv_disambig_create')],
+    [Markup.button.callback('❌ Cancel', 'cancel_action')],
+  ]
+  await ctx.reply('Choose:', Markup.inlineKeyboard(buttons))
+}
+
 // ── Check + summarise products against POS ────────────────────────────────────
 
 async function checkAndSummarise(
@@ -524,7 +589,21 @@ async function handlePurchaseFile(ctx: BotContext, fileBuffer: Buffer, ext: stri
     return
   }
 
-  await ctx.reply(`✅ Found ${invoiceRows.length} product rows. Looking up in POS…`)
+  // Store rows and ask for location before hitting POS — ensures lookup and
+  // product creation both use the same location-scoped variation IDs.
+  ctx.session.pendingPurchaseInvoiceRows = invoiceRows
+  ctx.session.step = 'await_purchase_prelookup_location'
+
+  await ctx.reply(
+    `✅ Found *${invoiceRows.length}* product rows.\n\nWhich location is this purchase for?`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.reply('Select location:', locationKeyboard('purpre_loc'))
+}
+
+async function handlePurchaseLookup(ctx: BotContext): Promise<void> {
+  const invoiceRows = ctx.session.pendingPurchaseInvoiceRows ?? []
+  const locationId  = ctx.session.pendingPurchaseLocationId
 
   let pos: POSClient
   try {
@@ -536,46 +615,69 @@ async function handlePurchaseFile(ctx: BotContext, fileBuffer: Buffer, ext: stri
     return
   }
 
-  const lookupResults = await Promise.all(
-    invoiceRows.map(async row => ({ row, match: await pos.searchProductForPurchase(row.posName) }))
-  )
+  let lookupResults: Array<{ row: InvoiceRow; result: Awaited<ReturnType<POSClient['findProductForPurchase']>> }>
+  try {
+    lookupResults = await Promise.all(
+      invoiceRows.map(async row => ({ row, result: await pos.findProductForPurchase(row.posName, locationId) }))
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ POS lookup failed: ${err.message ?? err}`)
+    ctx.session = {}
+    return
+  }
 
   const found: NonNullable<SessionData['pendingPurchaseLines']> = []
-  const missing: string[] = []
+  const missingRows: InvoiceRow[] = []
+  const disambigQueue: NonNullable<SessionData['pendingPurchaseDisambigQueue']> = []
 
-  for (const { row, match } of lookupResults) {
-    if (match) {
+  for (const { row, result } of lookupResults) {
+    if (result.exact) {
       found.push({
         posName: row.posName,
-        productId: match.productId,
-        variationId: match.variationId,
+        productId: result.exact.productId,
+        variationId: result.exact.variationId,
         unitId: row.categorySlug === 'edge-tapes' ? '2097' : '2094',
         quantity: row.quantity,
         usdUnitPrice: row.usdUnitPrice,
         face: row.face,
       })
+    } else if (result.nearMatches.length > 0) {
+      disambigQueue.push({ row, candidates: result.nearMatches })
     } else {
-      missing.push(row.posName)
+      missingRows.push(row)
     }
   }
 
   ctx.session.pendingPurchaseLines = found
 
-  if (missing.length > 0) {
-    const missingRows = invoiceRows.filter(r => missing.includes(r.posName))
+  if (disambigQueue.length > 0) {
+    ctx.session.pendingPurchaseDisambigQueue = disambigQueue
+    ctx.session.pendingPurchaseMissingRows = missingRows
+    ctx.session.pendingPurchaseNeedsCreate = missingRows.length > 0
+    ctx.session.step = 'await_purchase_disambig'
+
+    let summary = `✅ ${found.length} found in POS.`
+    if (missingRows.length > 0) summary += ` ${missingRows.length} not found.`
+    summary += ` *${disambigQueue.length} need disambiguation.*`
+    await ctx.reply(summary, { parse_mode: 'Markdown' })
+    await showNextPurchaseDisambig(ctx)
+    return
+  }
+
+  if (missingRows.length > 0) {
     ctx.session.pendingPurchaseMissingRows = missingRows
     ctx.session.pendingPurchaseNeedsCreate = true
     ctx.session.step = 'await_purchase_missing_confirm'
 
-    let msg = `⚠️ *${missing.length} product(s) not yet in POS:*\n\n`
-    msg += missing.map(n => `• ${n}`).join('\n')
+    let msg = `⚠️ *${missingRows.length} product(s) not yet in POS:*\n\n`
+    msg += missingRows.map(r => `• ${r.posName}`).join('\n')
     if (found.length > 0) msg += `\n\n*${found.length} product(s)* are already in POS.`
-    msg += `\n\nShould I create the ${missing.length} missing product(s) now and include all ${found.length + missing.length} in the purchase?`
+    msg += `\n\nShould I create the ${missingRows.length} missing product(s) now and include all ${found.length + missingRows.length} in the purchase?`
     await sendLong(ctx, msg)
     await ctx.reply(
       'What would you like to do?',
       Markup.inlineKeyboard([
-        [Markup.button.callback(`✅ Create ${missing.length} & continue`, 'purchase_create_and_continue')],
+        [Markup.button.callback(`✅ Create ${missingRows.length} & continue`, 'purchase_create_and_continue')],
         [Markup.button.callback('❌ Cancel', 'cancel_action')],
       ])
     )
@@ -1869,24 +1971,181 @@ bot.action(/^inv_loc_(928|952)$/, async ctx => {
   )
 })
 
+bot.action(/^purpre_loc_(928|952)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_prelookup_location') return
+  ctx.session.pendingPurchaseLocationId = ctx.match[1]
+  await ctx.reply(
+    `✅ Location: *${LOCATION_LABELS[ctx.match[1]]} (${ctx.match[1]})*\n\n🔍 Looking up ${ctx.session.pendingPurchaseInvoiceRows?.length ?? 0} products in POS…`,
+    { parse_mode: 'Markdown' }
+  )
+  await handlePurchaseLookup(ctx)
+})
+
 bot.action('purchase_create_and_continue', async ctx => {
   await ctx.answerCbQuery()
   if (ctx.session.step !== 'await_purchase_missing_confirm') return
-  ctx.session.step = 'await_purchase_location'
-  await ctx.reply('Which location should the missing products be created at?', locationKeyboard('pur_loc'))
+  // Location already captured before the lookup — skip straight to rate entry.
+  ctx.session.step = 'await_purchase_rate'
+  await ctx.reply(EXCHANGE_RATE_PROMPT, { parse_mode: 'Markdown' })
 })
 
-bot.action(/^pur_loc_(928|952)$/, async ctx => {
-  await ctx.answerCbQuery()
-  if (ctx.session.step !== 'await_purchase_location') return
+// ── Purchase disambiguation ───────────────────────────────────────────────────
 
-  ctx.session.pendingPurchaseLocationId = ctx.match[1]
-  ctx.session.step = 'await_purchase_rate'
+async function afterPurchaseDisambigDone(ctx: BotContext): Promise<void> {
+  const missingRows = ctx.session.pendingPurchaseMissingRows ?? []
+
+  if (missingRows.length > 0) {
+    ctx.session.pendingPurchaseNeedsCreate = true
+    ctx.session.step = 'await_purchase_missing_confirm'
+
+    const found = ctx.session.pendingPurchaseLines?.length ?? 0
+    let msg = `⚠️ *${missingRows.length} product(s) not yet in POS:*\n\n`
+    msg += missingRows.map(r => `• ${r.posName}`).join('\n')
+    if (found > 0) msg += `\n\n*${found} product(s)* are already in POS (or matched).`
+    msg += `\n\nShould I create the ${missingRows.length} missing product(s) and include all in the purchase?`
+    await sendLong(ctx, msg)
+    await ctx.reply(
+      'What would you like to do?',
+      Markup.inlineKeyboard([
+        [Markup.button.callback(`✅ Create ${missingRows.length} & continue`, 'purchase_create_and_continue')],
+        [Markup.button.callback('❌ Cancel', 'cancel_action')],
+      ])
+    )
+    return
+  }
+
+  const total = ctx.session.pendingPurchaseLines?.length ?? 0
+  ctx.session.step = 'await_purchase_supplier'
   await ctx.reply(
-    `✅ Location: *${LOCATION_LABELS[ctx.match[1]]} (${ctx.match[1]})*`,
+    `✅ All ${total} products confirmed in POS.\n\n*Which supplier is this invoice from?*`,
     { parse_mode: 'Markdown' }
   )
-  await ctx.reply(EXCHANGE_RATE_PROMPT, { parse_mode: 'Markdown' })
+  await ctx.reply(
+    'Select supplier:',
+    Markup.inlineKeyboard([
+      ...SUPPLIERS.map(s => [Markup.button.callback(s.name, `purchase_supplier_${s.id}`)]),
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
+    ])
+  )
+}
+
+bot.action(/^pur_disambig_use_(\d+)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_disambig') return
+
+  const queue = ctx.session.pendingPurchaseDisambigQueue ?? []
+  if (queue.length === 0) return
+
+  const idx = parseInt(ctx.match[1], 10)
+  const item = queue[0]
+  const candidate = item.candidates[idx]
+  if (!candidate) {
+    await ctx.answerCbQuery('⚠️ This button is outdated — please use the latest message.')
+    return
+  }
+
+  ctx.session.pendingPurchaseLines = [
+    ...(ctx.session.pendingPurchaseLines ?? []),
+    {
+      posName: item.row.posName,
+      productId: candidate.productId,
+      variationId: candidate.variationId,
+      unitId: item.row.categorySlug === 'edge-tapes' ? '2097' : '2094',
+      quantity: item.row.quantity,
+      usdUnitPrice: item.row.usdUnitPrice,
+      face: item.row.face,
+    },
+  ]
+  ctx.session.pendingPurchaseDisambigQueue = queue.slice(1)
+
+  if ((ctx.session.pendingPurchaseDisambigQueue ?? []).length > 0) {
+    await showNextPurchaseDisambig(ctx)
+  } else {
+    await afterPurchaseDisambigDone(ctx)
+  }
+})
+
+bot.action('pur_disambig_create', async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_disambig') return
+
+  const queue = ctx.session.pendingPurchaseDisambigQueue ?? []
+  if (queue.length === 0) return
+
+  const item = queue[0]
+  ctx.session.pendingPurchaseMissingRows = [
+    ...(ctx.session.pendingPurchaseMissingRows ?? []),
+    item.row,
+  ]
+  ctx.session.pendingPurchaseDisambigQueue = queue.slice(1)
+
+  if ((ctx.session.pendingPurchaseDisambigQueue ?? []).length > 0) {
+    await showNextPurchaseDisambig(ctx)
+  } else {
+    await afterPurchaseDisambigDone(ctx)
+  }
+})
+
+// ── Invoice disambiguation ────────────────────────────────────────────────────
+
+async function afterInvoiceDisambigDone(ctx: BotContext): Promise<void> {
+  const newRows = ctx.session.pendingInvoiceNewRows ?? []
+
+  if (newRows.length === 0) {
+    await ctx.reply('✅ All products matched to existing POS entries. Nothing to create.')
+    ctx.session = {}
+    return
+  }
+
+  let msg = `🆕 *${newRows.length} product(s) to create:*\n\n`
+  for (const r of newRows) {
+    msg += `• ${r.posName} (PDF: ${r.pdfName})\n`
+  }
+
+  ctx.session.step = 'await_invoice_location'
+  ctx.session.pendingInvoiceCategorySlugs = [...new Set(newRows.map(r => r.categorySlug))]
+
+  await sendLong(ctx, msg)
+  await ctx.reply('Which location should these products be created at?', locationKeyboard('inv_loc'))
+}
+
+bot.action('inv_disambig_skip', async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_invoice_disambig') return
+
+  const queue = ctx.session.pendingInvoiceDisambigQueue ?? []
+  if (queue.length === 0) return
+
+  // "Use existing" — skip creation of this row
+  ctx.session.pendingInvoiceDisambigQueue = queue.slice(1)
+
+  if ((ctx.session.pendingInvoiceDisambigQueue ?? []).length > 0) {
+    await showNextInvoiceDisambig(ctx)
+  } else {
+    await afterInvoiceDisambigDone(ctx)
+  }
+})
+
+bot.action('inv_disambig_create', async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_invoice_disambig') return
+
+  const queue = ctx.session.pendingInvoiceDisambigQueue ?? []
+  if (queue.length === 0) return
+
+  const item = queue[0]
+  ctx.session.pendingInvoiceNewRows = [
+    ...(ctx.session.pendingInvoiceNewRows ?? []),
+    item.row,
+  ]
+  ctx.session.pendingInvoiceDisambigQueue = queue.slice(1)
+
+  if ((ctx.session.pendingInvoiceDisambigQueue ?? []).length > 0) {
+    await showNextInvoiceDisambig(ctx)
+  } else {
+    await afterInvoiceDisambigDone(ctx)
+  }
 })
 
 bot.action(/^purchase_supplier_(\d+)$/, async ctx => {
@@ -2221,6 +2480,16 @@ bot.on('text', async ctx => {
     return
   }
 
+  if (step === 'await_purchase_disambig') {
+    await ctx.reply('Please use the buttons above to choose, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_invoice_disambig') {
+    await ctx.reply('Please use the buttons above to choose, or /cancel to abort.')
+    return
+  }
+
   if (step === 'await_add_location') {
     await ctx.reply('Please select a location using the buttons above, or /cancel to abort.')
     return
@@ -2236,7 +2505,7 @@ bot.on('text', async ctx => {
     return
   }
 
-  if (step === 'await_purchase_location') {
+  if (step === 'await_purchase_prelookup_location') {
     await ctx.reply('Please select a location using the buttons above, or /cancel to abort.')
     return
   }
@@ -2471,13 +2740,47 @@ bot.on('document', async ctx => {
 
         const existing: InvoiceRow[] = []
         const newRows: InvoiceRow[] = []
+        const invoiceDisambigQueue: NonNullable<SessionData['pendingInvoiceDisambigQueue']> = []
 
         for (const row of invoiceRows) {
           if (posNameMap.has(row.posName.toLowerCase())) {
             existing.push(row)
-          } else {
-            newRows.push(row)
+            continue
           }
+
+          // Near-match check: strip size suffix and look for same base color
+          const baseColorMatch = row.posName.match(TAPE_SIZE_SUFFIX_RE)
+          if (baseColorMatch) {
+            const baseColorLower = baseColorMatch[1].trim().toLowerCase()
+            const nearMatchProducts = allPos.filter((p: any) => {
+              const pNameLower = p.parsedName.toLowerCase()
+              return pNameLower !== row.posName.toLowerCase() &&
+                (pNameLower === baseColorLower || pNameLower.startsWith(baseColorLower + ' '))
+            })
+            if (nearMatchProducts.length > 0) {
+              invoiceDisambigQueue.push({
+                row,
+                candidates: nearMatchProducts.map((p: any) => ({ posName: p.parsedName })),
+              })
+              continue
+            }
+          }
+
+          newRows.push(row)
+        }
+
+        if (invoiceDisambigQueue.length > 0) {
+          let msg = `📋 *${existing.length} already in POS* — will be skipped\n`
+          if (newRows.length > 0) msg += `🆕 *${newRows.length} confirmed new*\n`
+          msg += `⚠️ *${invoiceDisambigQueue.length} need disambiguation*`
+
+          ctx.session.step = 'await_invoice_disambig'
+          ctx.session.pendingInvoiceNewRows = newRows
+          ctx.session.pendingInvoiceDisambigQueue = invoiceDisambigQueue
+
+          await sendLong(ctx, msg)
+          await showNextInvoiceDisambig(ctx)
+          return
         }
 
         if (newRows.length === 0) {
