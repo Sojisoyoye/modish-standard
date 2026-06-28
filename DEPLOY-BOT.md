@@ -285,6 +285,7 @@ Common causes:
 | Container exits immediately | Script crash on startup | Check logs for stack trace — usually a missing env var |
 | `401 Unauthorized` from Telegram API | Bot token is wrong or revoked | Get a fresh token from @BotFather |
 | POS login failed | Wrong credentials or POS URL | Verify `INVENTORY_APP_*` vars in `.env.bot` |
+| `/purchase` → "Something went wrong, please try again later" | UltimatePOS V5.40 requires `payment[0][amount/paid_on/method]` in the POST body even for `status='ordered'`. Missing payment fields cause the controller's catch block to fire silently. Ensure you are running the latest `pos-client.ts`. |
 | `Insufficient permissions; permission 'create' required` | Sanity token has Write role but not Editor | Generate a new token with the **Editor** role at sanity.io → project → API → Tokens, update `SANITY_API_TOKEN` in `/opt/modish/.env.bot`, restart bot |
 | Other Sanity errors | Wrong project ID, dataset, or token | Verify `NEXT_PUBLIC_SANITY_PROJECT_ID`, `NEXT_PUBLIC_SANITY_DATASET`, and `SANITY_API_TOKEN` in `.env.bot` |
 | `/image` — `Cloudinary upload failed` | Wrong API key or secret | Check `CLOUDINARY_API_KEY` and `CLOUDINARY_API_SECRET` in `.env.bot` against cloudinary.com → Settings → API Keys |
@@ -340,13 +341,54 @@ docker compose up -d product-bot   # recreates the container with fresh env
 
 | Command | What it does |
 |---|---|
-| `/add` | Add products to POS — describe in plain text, or upload a CSV/Excel file. Bot checks POS, creates missing products, then offers to sync to the website. |
+| `/add` | Add products to POS — describe in plain text, or upload a CSV/Excel/PDF file. Bot checks POS, shows missing products, asks **which location** (BL0001 928 or BL0002 952), optionally asks **which Sanity category** (when names are ambiguous), creates missing products, then offers to sync to the website. |
 | `/sync` | Sync **all** POS products → Sanity website. New products are created; existing ones get price + stock updated. |
 | `/sync <category>` | Sync one category only (faster, less noisy). |
 | `/syncstock` | Trigger n8n Workflow J: pulls POS stock → updates Airtable Product Catalog → kicks off content generation workflows. |
 | `/find <name>` | Search POS by name (partial match). Returns SKU, price, stock, and a direct edit link. |
 | `/list` | List up to 30 active products from POS. |
 | `/list <category>` | List products filtered to one category. |
+
+### PDF invoice flow (auto-triggered when a supplier PDF is sent)
+
+Send a supplier proforma invoice PDF to the bot at any time (no command needed). The bot:
+
+1. Detects numbered invoice rows (tab-separated: row number · product name · quantities · US$ prices)
+2. Checks all products against POS globally (searches across all locations)
+3. Shows existing (skipped) vs new products with proposed POS names
+4. Asks **which location** to create new products at (BL0001 928 · BL0002 952)
+5. Asks exchange rate (NGN/USD)
+6. Shows price breakdown: cost = USD × rate, selling = ₦14,000 non-glossy / ₦15,000 glossy
+7. User confirms → creates in POS at chosen location → offers Sanity sync
+
+Edge tape invoices are identified automatically by the `0.9×48MM` dimension marker. Product names follow the convention `{Color} 48MM` (non-glossy) or `{Color} 48MM Gloss`.
+
+### Purchase orders
+
+| Command | What it does |
+|---|---|
+| `/purchase` | Create a POS purchase order from a supplier invoice PDF. Full multi-step flow — see details below. |
+
+**`/purchase` flow — all products already in POS:**
+1. Send the invoice PDF
+2. Select **location** (BL0001 928 · BL0002 952) — location is chosen before the POS lookup so near-match variation IDs are resolved correctly
+3. Bot looks up all products at that location → confirms all found
+4. If any product name is ambiguous (near-match), bot asks you to confirm the correct POS entry one at a time
+5. Select supplier (Mr Adward Shouguang · Miss Susan Sunstar · Mr Soji Soyoye)
+6. Enter exchange rate (NGN/USD)
+7. Select status (Ordered / Received / Pending)
+8. Enter shipping charges (₦, or 0 to skip)
+9. Confirm summary → purchase order created in POS
+
+**`/purchase` flow — some products missing from POS:**
+1. Send the invoice PDF
+2. Select **location** (BL0001 928 · BL0002 952)
+3. Bot shows found vs missing products, offers "Create N & continue"
+4. Enter exchange rate → missing products created at chosen location
+5. Continue to supplier → status → shipping → confirm
+6. Purchase order created at the same location the products were created at
+
+> **Tip:** Use `/purchase` (not the raw PDF drop) when you want to record a purchase order with supplier, cost prices, and shipping. Use the raw PDF drop when you just want to add new products to POS.
 
 ### Add to Sanity directly (no POS)
 

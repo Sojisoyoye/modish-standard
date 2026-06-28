@@ -28,15 +28,20 @@ dotenv.config({ path: '.env.local' })
 dotenv.config({ path: '.env' })
 
 import * as http from 'node:http'
+import { PDFParse } from 'pdf-parse'
 import { Telegraf, session, Markup, Context } from 'telegraf'
 import { createClient } from 'next-sanity'
 import { v2 as cloudinary } from 'cloudinary'
-import { POSClient, createPOSClientFromEnv, type POSProduct } from './pos-client'
+import { POSClient, createPOSClientFromEnv, type POSProduct, type PurchaseLine, type CreatePurchaseInput } from './pos-client'
 import {
   parseCSV,
   parseExcel,
   parseTextInput,
+  parseInvoiceRowsRich,
+  pdfNameToPosName,
+  TAPE_SIZE_SUFFIX_RE,
   type ParsedProduct,
+  type InvoiceRow,
 } from './parse-product-doc'
 
 // ── Sanity client ─────────────────────────────────────────────────────────────
@@ -141,7 +146,7 @@ function isAuthorized(userId: number | undefined): boolean {
 // ── Session types ─────────────────────────────────────────────────────────────
 
 interface SessionData {
-  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description'
+  step?: 'await_product_text' | 'await_add_location' | 'await_add_category' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_invoice_location' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm' | 'await_purchase_file' | 'await_purchase_prelookup_location' | 'await_purchase_missing_confirm' | 'await_purchase_disambig' | 'await_purchase_supplier' | 'await_purchase_rate' | 'await_purchase_status' | 'await_purchase_shipping' | 'await_purchase_shipping_label' | 'await_purchase_confirm' | 'await_invoice_disambig'
   pendingCreate?: ParsedProduct[]
   pendingCategories?: string[]
   pendingImageSlug?: string
@@ -154,6 +159,39 @@ interface SessionData {
   pendingSanityProductCategorySlug?: string
   pendingSanityProductCategoryName?: string
   pendingSanityProductPrice?: number
+  pendingInvoiceNewRows?: InvoiceRow[]
+  pendingInvoiceExchangeRate?: number
+  pendingInvoiceCategorySlugs?: string[]
+  pendingPurchaseLines?: Array<{
+    posName: string
+    productId: string
+    variationId: string
+    unitId: string
+    quantity: number
+    usdUnitPrice: number
+    face: 'Matt' | 'Embossed' | 'Glossy' | 'Unknown'
+  }>
+  pendingPurchaseInvoiceRows?: InvoiceRow[]
+  pendingPurchaseMissingRows?: InvoiceRow[]
+  pendingPurchaseNeedsCreate?: boolean
+  pendingInvoiceLocationId?: string
+  pendingAddLocationId?: string
+  pendingAddCategoryOverride?: string
+  pendingPurchaseLocationId?: string
+  pendingPurchaseSupplierId?: string
+  pendingPurchaseSupplierName?: string
+  pendingPurchaseExchangeRate?: number
+  pendingPurchaseStatus?: 'ordered' | 'received' | 'pending'
+  pendingPurchaseShipping?: number
+  pendingPurchaseShippingLabel?: string
+  pendingPurchaseDisambigQueue?: Array<{
+    row: InvoiceRow
+    candidates: Array<{ productId: string; variationId: string; posName: string }>
+  }>
+  pendingInvoiceDisambigQueue?: Array<{
+    row: InvoiceRow
+    candidates: Array<{ posName: string }>
+  }>
 }
 
 interface BotContext extends Context {
@@ -361,6 +399,19 @@ async function runSync(categorySlug?: string): Promise<SyncResult> {
   return { created, updated, skipped }
 }
 
+// ── Invoice price constants ───────────────────────────────────────────────────
+
+const INVOICE_SELLING_PRICE_NORMAL = 14_000
+const INVOICE_SELLING_PRICE_GLOSSY = 15_000
+
+// ── Suppliers (numeric DB IDs from POS /contacts) ────────────────────────────
+
+const SUPPLIERS = [
+  { id: '59730', name: 'Mr Adward Shouguang' },
+  { id: '91674', name: 'Miss Susan Sunstar' },
+  { id: '56902', name: 'Mr Soji Soyoye' },
+]
+
 // ── Format helpers ────────────────────────────────────────────────────────────
 
 function formatPrice(price: number | undefined): string {
@@ -390,6 +441,61 @@ async function sendLong(ctx: BotContext, text: string): Promise<void> {
   for (const chunk of chunks) {
     await ctx.reply(chunk, { parse_mode: 'Markdown' })
   }
+}
+
+// ── Disambiguation helpers ────────────────────────────────────────────────────
+
+function buildDisambigMsg(
+  row: InvoiceRow,
+  candidates: Array<{ posName: string }>,
+  remaining: number,
+  notFoundText: string,
+  multiMatchFooter: string,
+): string {
+  let msg = `⚠️ *"${row.posName}"* ${notFoundText}`
+  if (remaining > 1) msg += ` _(${remaining} to resolve)_`
+  msg += '\n\n'
+  if (candidates.length === 1) {
+    msg += `Near match found:\n• *${candidates[0].posName}*\n\n`
+    msg += `Is this the same product? Or create *"${row.posName}"* as a new POS entry?`
+  } else {
+    msg += `Near matches found:\n`
+    candidates.forEach((c, i) => { msg += `${i + 1}. *${c.posName}*\n` })
+    msg += `\n${multiMatchFooter}`
+  }
+  return msg
+}
+
+async function showNextPurchaseDisambig(ctx: BotContext): Promise<void> {
+  const queue = ctx.session.pendingPurchaseDisambigQueue ?? []
+  if (queue.length === 0) return
+  const { row, candidates } = queue[0]
+  const msg = buildDisambigMsg(row, candidates, queue.length,
+    'not found in POS.',
+    'Which existing product matches, or create a new one?')
+  await sendLong(ctx, msg)
+  const buttons = [
+    ...candidates.map((c, i) => [Markup.button.callback(`✅ Use "${c.posName}"`, `pur_disambig_use_${i}`)]),
+    [Markup.button.callback(`🆕 Create "${row.posName}" (new)`, 'pur_disambig_create')],
+    [Markup.button.callback('❌ Cancel', 'cancel_action')],
+  ]
+  await ctx.reply('Choose:', Markup.inlineKeyboard(buttons))
+}
+
+async function showNextInvoiceDisambig(ctx: BotContext): Promise<void> {
+  const queue = ctx.session.pendingInvoiceDisambigQueue ?? []
+  if (queue.length === 0) return
+  const { row, candidates } = queue[0]
+  const msg = buildDisambigMsg(row, candidates, queue.length,
+    'not found exactly in POS.',
+    'If any of these is the same product, skip creation. Otherwise create a new entry.')
+  await sendLong(ctx, msg)
+  const buttons = [
+    [Markup.button.callback('✅ Use existing (skip creation)', 'inv_disambig_skip')],
+    [Markup.button.callback(`🆕 Create "${row.posName}" (new)`, 'inv_disambig_create')],
+    [Markup.button.callback('❌ Cancel', 'cancel_action')],
+  ]
+  await ctx.reply('Choose:', Markup.inlineKeyboard(buttons))
 }
 
 // ── Check + summarise products against POS ────────────────────────────────────
@@ -445,13 +551,288 @@ async function checkAndSummarise(
   ctx.session.pendingCreate = missingParsed
   const uniqueCategories = Array.from(new Set(missingParsed.map(p => p.categorySlug)))
   ctx.session.pendingCategories = uniqueCategories
-  ctx.session.step = 'await_confirm_create'
+  ctx.session.step = 'await_add_location'
 
   await ctx.reply(
-    `Create the ${missingParsed.length} missing product(s) in POS?`,
+    `Which location should these ${missingParsed.length} product(s) be created at?`,
+    locationKeyboard('add_loc')
+  )
+}
+
+// ── Purchase order helpers ────────────────────────────────────────────────────
+
+async function handlePurchaseFile(ctx: BotContext, fileBuffer: Buffer, ext: string): Promise<void> {
+  if (ext !== 'pdf') {
+    await ctx.reply('Only PDF supplier invoices are supported for purchase orders right now.')
+    ctx.session = {}
+    return
+  }
+
+  let rawText = ''
+  try {
+    const parser = new PDFParse({ data: fileBuffer })
+    const result = await parser.getText()
+    await parser.destroy()
+    rawText = result.text
+  } catch (err: any) {
+    await ctx.reply(`❌ Failed to read PDF: ${err.message ?? err}`)
+    ctx.session = {}
+    return
+  }
+
+  const invoiceRows = parseInvoiceRowsRich(rawText)
+  if (invoiceRows.length === 0) {
+    await ctx.reply(
+      "❌ Couldn't detect invoice rows in this PDF.\n\nMake sure it's a supplier PI with tab-separated columns (row number, product name, quantities, US$ prices)."
+    )
+    ctx.session = {}
+    return
+  }
+
+  // Store rows and ask for location before hitting POS — ensures lookup and
+  // product creation both use the same location-scoped variation IDs.
+  ctx.session.pendingPurchaseInvoiceRows = invoiceRows
+  ctx.session.step = 'await_purchase_prelookup_location'
+
+  await ctx.reply(
+    `✅ Found *${invoiceRows.length}* product rows.\n\nWhich location is this purchase for?`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.reply('Select location:', locationKeyboard('purpre_loc'))
+}
+
+async function handlePurchaseLookup(ctx: BotContext): Promise<void> {
+  const invoiceRows = ctx.session.pendingPurchaseInvoiceRows ?? []
+  const locationId  = ctx.session.pendingPurchaseLocationId
+
+  let pos: POSClient
+  try {
+    pos = createPOSClientFromEnv()
+    await pos.login()
+  } catch (err: any) {
+    await ctx.reply(`❌ POS login failed: ${err.message ?? err}`)
+    ctx.session = {}
+    return
+  }
+
+  let lookupResults: Array<{ row: InvoiceRow; result: Awaited<ReturnType<POSClient['findProductForPurchase']>> }>
+  try {
+    lookupResults = await Promise.all(
+      invoiceRows.map(async row => ({ row, result: await pos.findProductForPurchase(row.posName, locationId) }))
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ POS lookup failed: ${err.message ?? err}`)
+    ctx.session = {}
+    return
+  }
+
+  const found: NonNullable<SessionData['pendingPurchaseLines']> = []
+  const missingRows: InvoiceRow[] = []
+  const disambigQueue: NonNullable<SessionData['pendingPurchaseDisambigQueue']> = []
+
+  for (const { row, result } of lookupResults) {
+    if (result.exact) {
+      found.push({
+        posName: row.posName,
+        productId: result.exact.productId,
+        variationId: result.exact.variationId,
+        unitId: row.categorySlug === 'edge-tapes' ? '2097' : '2094',
+        quantity: row.quantity,
+        usdUnitPrice: row.usdUnitPrice,
+        face: row.face,
+      })
+    } else if (result.nearMatches.length > 0) {
+      disambigQueue.push({ row, candidates: result.nearMatches })
+    } else {
+      missingRows.push(row)
+    }
+  }
+
+  ctx.session.pendingPurchaseLines = found
+
+  if (disambigQueue.length > 0) {
+    ctx.session.pendingPurchaseDisambigQueue = disambigQueue
+    ctx.session.pendingPurchaseMissingRows = missingRows
+    ctx.session.pendingPurchaseNeedsCreate = missingRows.length > 0
+    ctx.session.step = 'await_purchase_disambig'
+
+    let summary = `✅ ${found.length} found in POS.`
+    if (missingRows.length > 0) summary += ` ${missingRows.length} not found.`
+    summary += ` *${disambigQueue.length} need disambiguation.*`
+    await ctx.reply(summary, { parse_mode: 'Markdown' })
+    await showNextPurchaseDisambig(ctx)
+    return
+  }
+
+  if (missingRows.length > 0) {
+    ctx.session.pendingPurchaseMissingRows = missingRows
+    ctx.session.pendingPurchaseNeedsCreate = true
+    ctx.session.step = 'await_purchase_missing_confirm'
+
+    let msg = `⚠️ *${missingRows.length} product(s) not yet in POS:*\n\n`
+    msg += missingRows.map(r => `• ${r.posName}`).join('\n')
+    if (found.length > 0) msg += `\n\n*${found.length} product(s)* are already in POS.`
+    msg += `\n\nShould I create the ${missingRows.length} missing product(s) now and include all ${found.length + missingRows.length} in the purchase?`
+    await sendLong(ctx, msg)
+    await ctx.reply(
+      'What would you like to do?',
+      Markup.inlineKeyboard([
+        [Markup.button.callback(`✅ Create ${missingRows.length} & continue`, 'purchase_create_and_continue')],
+        [Markup.button.callback('❌ Cancel', 'cancel_action')],
+      ])
+    )
+    return
+  }
+
+  ctx.session.step = 'await_purchase_supplier'
+
+  await ctx.reply(
+    `✅ All ${found.length} products confirmed in POS.\n\n*Which supplier is this invoice from?*`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.reply(
+    'Select supplier:',
     Markup.inlineKeyboard([
-      Markup.button.callback(`✅ Yes, create ${missingParsed.length}`, 'confirm_create'),
-      Markup.button.callback('❌ Cancel', 'cancel_action'),
+      ...SUPPLIERS.map(s => [Markup.button.callback(s.name, `purchase_supplier_${s.id}`)]),
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
+    ])
+  )
+}
+
+async function showPurchaseSummary(ctx: BotContext): Promise<void> {
+  const lines    = ctx.session.pendingPurchaseLines ?? []
+  const rate     = ctx.session.pendingPurchaseExchangeRate ?? 0
+  const supplier = ctx.session.pendingPurchaseSupplierName ?? ''
+  const status   = ctx.session.pendingPurchaseStatus ?? 'ordered'
+  const shipping = ctx.session.pendingPurchaseShipping ?? 0
+  const shLabel  = ctx.session.pendingPurchaseShippingLabel ?? ''
+
+  let subtotal = 0
+  let msg = `📋 *Purchase Order Summary*\n\n`
+  msg += `*Supplier:* ${supplier}\n`
+  msg += `*Status:* ${status}\n`
+  msg += `*Rate:* ₦${rate.toLocaleString()}/USD\n\n`
+  msg += `*Products (${lines.length}):*\n`
+
+  for (const line of lines) {
+    const cost     = Math.round(line.usdUnitPrice * rate)
+    const sell     = line.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
+    const lineTotal = cost * line.quantity
+    subtotal += lineTotal
+    msg += `• *${line.posName}* — ${line.quantity} × ₦${cost.toLocaleString()} = ₦${lineTotal.toLocaleString()} (sell ₦${sell.toLocaleString()})\n`
+  }
+
+  msg += `\n*Subtotal:* ₦${subtotal.toLocaleString()}\n`
+  if (shipping > 0) {
+    msg += `*Shipping (${shLabel || 'Shipping'}):* ₦${shipping.toLocaleString()}\n`
+  }
+  msg += `*Grand total:* ₦${(subtotal + shipping).toLocaleString()}`
+
+  await sendLong(ctx, msg)
+  await ctx.reply(
+    `Create this purchase order in POS?`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback('✅ Create Purchase Order', 'confirm_purchase_create'),
+        Markup.button.callback('❌ Cancel', 'cancel_action'),
+      ],
+    ])
+  )
+}
+
+async function createMissingAndContinue(ctx: BotContext, rate: number): Promise<void> {
+  const missingRows = ctx.session.pendingPurchaseMissingRows ?? []
+
+  await ctx.reply(`✨ Creating ${missingRows.length} missing product(s) in POS…`)
+
+  let pos: POSClient
+  try {
+    pos = createPOSClientFromEnv()
+    await pos.login()
+  } catch (err: any) {
+    await ctx.reply(`❌ POS login failed: ${err.message ?? err}`)
+    ctx.session = {}
+    return
+  }
+
+  const createdNames: string[] = []
+  const createFailures: string[] = []
+
+  for (const row of missingRows) {
+    const costPrice   = Math.round(row.usdUnitPrice * rate)
+    const sellingPrice = row.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
+    try {
+      await pos.createProduct({ name: row.posName, costPrice, sellingPrice, locationId: ctx.session.pendingPurchaseLocationId ?? '928' })
+      createdNames.push(row.posName)
+    } catch (err: any) {
+      createFailures.push(`❌ ${row.posName}: ${err.message ?? err}`)
+    }
+  }
+
+  if (createFailures.length > 0) {
+    await ctx.reply(
+      `⚠️ Some products failed to create:\n${createFailures.join('\n')}\n\nOnly successfully created products will be in the purchase.`
+    )
+  }
+
+  // Batch-verify SKUs, then re-search for product_id / variation_id
+  if (createdNames.length > 0) {
+    const allPos = await pos.getProducts()
+    const skuMap = new Map(allPos.map(p => [p.parsedName.toLowerCase(), p.sku]))
+    const skuLines: string[] = []
+    for (const name of createdNames) {
+      const sku = skuMap.get(name.toLowerCase()) ?? 'N/A'
+      skuLines.push(`✅ ${name} (SKU: ${sku})`)
+    }
+    await ctx.reply(`*Created:*\n${skuLines.join('\n')}`, { parse_mode: 'Markdown' })
+  }
+
+  // Look up product_id + variation_id for each created product
+  const purchaseLocationId = ctx.session.pendingPurchaseLocationId ?? '928'
+  const resolveResults = await Promise.all(
+    missingRows
+      .filter(row => createdNames.includes(row.posName))
+      .map(async row => ({ row, match: await pos.searchProductForPurchase(row.posName, purchaseLocationId) }))
+  )
+
+  const newLines: NonNullable<SessionData['pendingPurchaseLines']> = []
+  const stillMissing: string[] = []
+
+  for (const { row, match } of resolveResults) {
+    if (match) {
+      newLines.push({
+        posName:     row.posName,
+        productId:   match.productId,
+        variationId: match.variationId,
+        unitId:      row.categorySlug === 'edge-tapes' ? '2097' : '2094',
+        quantity:    row.quantity,
+        usdUnitPrice: row.usdUnitPrice,
+        face:        row.face,
+      })
+    } else {
+      stillMissing.push(row.posName)
+    }
+  }
+
+  if (stillMissing.length > 0) {
+    await ctx.reply(`⚠️ Created but couldn't resolve for purchase: ${stillMissing.join(', ')}\nThese will be excluded from the purchase order.`)
+  }
+
+  ctx.session.pendingPurchaseLines = [...(ctx.session.pendingPurchaseLines ?? []), ...newLines]
+  ctx.session.pendingPurchaseMissingRows = undefined
+  ctx.session.pendingPurchaseNeedsCreate = undefined
+  ctx.session.step = 'await_purchase_supplier'
+
+  const total = ctx.session.pendingPurchaseLines.length
+  await ctx.reply(
+    `✅ Done — *${total} products* ready for the purchase order.\n\n*Which supplier is this invoice from?*`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.reply(
+    'Select supplier:',
+    Markup.inlineKeyboard([
+      ...SUPPLIERS.map(s => [Markup.button.callback(s.name, `purchase_supplier_${s.id}`)]),
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
     ])
   )
 }
@@ -464,7 +845,7 @@ if (!BOT_TOKEN) {
   process.exit(1)
 }
 
-const bot = new Telegraf<BotContext>(BOT_TOKEN)
+const bot = new Telegraf<BotContext>(BOT_TOKEN, { handlerTimeout: 10 * 60 * 1000 })
 
 // Session middleware (in-memory)
 bot.use(session({ defaultSession: (): SessionData => ({}) }))
@@ -489,8 +870,12 @@ bot.command('start', async ctx => {
     `👋 *Welcome to Modish Standard Bot!*\n\n` +
     `I manage your POS inventory and sync products to the Modish Standard website.\n\n` +
     `*— Add to POS (tracked inventory):*\n` +
-    `/add — Add products to POS via text or CSV/Excel file\n` +
+    `/add — Add products via text, CSV/Excel, or PDF → choose location → creates in POS → offers Sanity sync\n` +
+    `/purchase — Create a formal POS purchase order from a supplier invoice PDF (with supplier, rate, shipping)\n` +
     `/sync [category] — Push POS products → Sanity website\n\n` +
+    `*— Supplier invoice PDF (no command needed):*\n` +
+    `Just send a supplier PI/PDF directly. I'll detect the invoice rows, check POS, ask which location to create new products at, ask the exchange rate, show cost/selling prices, then create on confirm.\n` +
+    `Use /purchase instead when you also need to record a formal purchase order.\n\n` +
     `*— Add to Sanity directly (no POS):*\n` +
     `/addsanity <name> — Add a product directly to the website catalog\n` +
     `/addcategory <name> — Create a new product category\n\n` +
@@ -514,6 +899,7 @@ bot.command('start', async ctx => {
     `\`marine-boards\` · \`block-boards\` · \`edge-tapes\`\n` +
     `\`doors\` · \`pu-stone-panels\` · \`accessories\`\n\n` +
     `*Tips:*\n` +
+    `• Both /add and /purchase ask which POS location (BL0001 928 or BL0002 952) before creating products\n` +
     `• /addsanity for products not tracked in inventory (e.g. display items)\n` +
     `• /add for products you want to track in POS stock, then /sync to publish\n` +
     `• /find returns a direct POS edit link for price/stock updates`,
@@ -1261,6 +1647,19 @@ bot.command('addcategory', async ctx => {
   )
 })
 
+// ── /purchase ─────────────────────────────────────────────────────────────────
+
+bot.command('purchase', async ctx => {
+  ctx.session = { step: 'await_purchase_file' }
+  await ctx.reply(
+    `🧾 *Create Purchase Order*\n\n` +
+    `Send the supplier invoice PDF.\n\n` +
+    `All products must already exist in POS — use /add first if needed.\n\n` +
+    `Or /cancel to abort.`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
 // ── /add ──────────────────────────────────────────────────────────────────────
 
 bot.command('add', async ctx => {
@@ -1276,7 +1675,87 @@ bot.command('add', async ctx => {
   )
 })
 
+// ── Shared keyboard helpers ───────────────────────────────────────────────────
+
+const LOCATION_LABELS: Record<string, string> = {
+  '928': 'BL0001 — Main Store',
+  '952': 'BL0002',
+}
+
+function locationKeyboard(prefix: string) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(`🏪 ${LOCATION_LABELS['928']} (928)`, `${prefix}_928`)],
+    [Markup.button.callback(`🏬 ${LOCATION_LABELS['952']} (952)`, `${prefix}_952`)],
+    [Markup.button.callback('❌ Cancel', 'cancel_action')],
+  ])
+}
+
+function categoryKeyboard(prefix: string) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('MDF Boards', `${prefix}_mdf-boards`), Markup.button.callback('HDF Boards', `${prefix}_hdf-boards`)],
+    [Markup.button.callback('UV Gloss Boards', `${prefix}_uv-gloss-boards`), Markup.button.callback('Marine Boards', `${prefix}_marine-boards`)],
+    [Markup.button.callback('Block Boards', `${prefix}_block-boards`), Markup.button.callback('Doors', `${prefix}_doors`)],
+    [Markup.button.callback('PU Stone Panels', `${prefix}_pu-stone-panels`)],
+  ])
+}
+
+const EXCHANGE_RATE_PROMPT =
+  `What exchange rate *(NGN/USD)* should I use? This will be used for both creating the products and the purchase costs.\n_Example: type \`1400\` for ₦1,400 per USD_`
+
 // ── Inline keyboard callbacks ─────────────────────────────────────────────────
+
+bot.action(/^add_loc_(928|952)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_add_location') return
+
+  ctx.session.pendingAddLocationId = ctx.match[1]
+  const pending = ctx.session.pendingCreate ?? []
+  const needsCategory = pending.some(p => p.categorySlug === 'accessories')
+
+  if (needsCategory) {
+    ctx.session.step = 'await_add_category'
+    await ctx.reply(
+      `✅ Location: *${LOCATION_LABELS[ctx.match[1]]} (${ctx.match[1]})*\n\nSome products couldn't be auto-categorized. Which Sanity category should they go in?`,
+      { parse_mode: 'Markdown' }
+    )
+    await ctx.reply('Select category:', categoryKeyboard('add_cat'))
+  } else {
+    ctx.session.step = 'await_confirm_create'
+    await ctx.reply(
+      `Create the ${pending.length} missing product(s) in POS?`,
+      Markup.inlineKeyboard([
+        Markup.button.callback(`✅ Yes, create ${pending.length}`, 'confirm_create'),
+        Markup.button.callback('❌ Cancel', 'cancel_action'),
+      ])
+    )
+  }
+})
+
+bot.action(/^add_cat_(.+)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_add_category') return
+
+  const categoryOverride = ctx.match[1]
+  ctx.session.pendingAddCategoryOverride = categoryOverride
+
+  const cats = ctx.session.pendingCategories ?? []
+  ctx.session.pendingCategories = [
+    ...cats.filter(c => c !== 'accessories'),
+    categoryOverride,
+  ]
+
+  const pending = ctx.session.pendingCreate ?? []
+  ctx.session.step = 'await_confirm_create'
+
+  await ctx.reply(`✅ Category: *${categoryOverride}*`, { parse_mode: 'Markdown' })
+  await ctx.reply(
+    `Create the ${pending.length} missing product(s) in POS?`,
+    Markup.inlineKeyboard([
+      Markup.button.callback(`✅ Yes, create ${pending.length}`, 'confirm_create'),
+      Markup.button.callback('❌ Cancel', 'cancel_action'),
+    ])
+  )
+})
 
 bot.action('confirm_create', async ctx => {
   await ctx.answerCbQuery()
@@ -1300,19 +1779,31 @@ bot.action('confirm_create', async ctx => {
     return
   }
 
-  const successes: string[] = []
+  const createdNames: string[] = []
   const failures: string[] = []
 
+  const addLocationId = ctx.session.pendingAddLocationId
   for (const product of pending) {
     try {
-      const result = await pos.createProduct({
+      await pos.createProduct({
         name: product.name,
         costPrice: product.costPrice ?? Math.round((product.price ?? 0) * 0.65),
         sellingPrice: product.price ?? 0,
+        ...(addLocationId ? { locationId: addLocationId } : {}),
       })
-      successes.push(`✅ ${result.name} (SKU: ${result.sku})`)
+      createdNames.push(product.name)
     } catch (err: any) {
       failures.push(`❌ ${product.name}: ${err.message ?? err}`)
+    }
+  }
+
+  const successes: string[] = []
+  if (createdNames.length > 0) {
+    const allPos = await pos.getProducts()
+    const skuMap = new Map(allPos.map(p => [p.parsedName.toLowerCase(), p.sku]))
+    for (const name of createdNames) {
+      const sku = skuMap.get(name.toLowerCase()) ?? 'N/A'
+      successes.push(`✅ ${name} (SKU: ${sku})`)
     }
   }
 
@@ -1324,6 +1815,8 @@ bot.action('confirm_create', async ctx => {
 
   const categories = ctx.session.pendingCategories ?? []
   ctx.session.pendingCreate = undefined
+  ctx.session.pendingAddLocationId = undefined
+  ctx.session.pendingAddCategoryOverride = undefined
   ctx.session.step = 'await_sync_after_create'
 
   if (successes.length > 0) {
@@ -1375,6 +1868,454 @@ bot.action('confirm_sync_after_create', async ctx => {
     `✅ *Sync complete!*\n\n` + results.join('\n'),
     { parse_mode: 'Markdown' }
   )
+})
+
+bot.action('confirm_invoice_create', async ctx => {
+  await ctx.answerCbQuery()
+
+  const newRows = ctx.session.pendingInvoiceNewRows ?? []
+  const rate = ctx.session.pendingInvoiceExchangeRate ?? 0
+  const categorySlugs = ctx.session.pendingInvoiceCategorySlugs ?? ['edge-tapes']
+  const invoiceLocationId = ctx.session.pendingInvoiceLocationId
+  ctx.session = {}
+
+  if (newRows.length === 0 || rate <= 0) {
+    await ctx.reply('Session expired. Please send the PDF again.')
+    return
+  }
+
+  await ctx.reply(`✨ Creating ${newRows.length} product(s) in POS…`)
+
+  let pos: any
+  try {
+    pos = createPOSClientFromEnv()
+    await pos.login()
+  } catch (err: any) {
+    await ctx.reply(`❌ POS login failed: ${err.message ?? err}`)
+    return
+  }
+
+  const createdNames: string[] = []
+  const failures: string[] = []
+
+  for (const row of newRows) {
+    const costPrice  = Math.round(row.usdUnitPrice * rate)
+    const sellingPrice = row.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
+    try {
+      await pos.createProduct({ name: row.posName, costPrice, sellingPrice, locationId: invoiceLocationId })
+      createdNames.push(row.posName)
+    } catch (err: any) {
+      failures.push(`❌ ${row.posName}: ${err.message ?? err}`)
+    }
+  }
+
+  const successes: string[] = []
+  if (createdNames.length > 0) {
+    const allPos = await pos.getProducts()
+    const skuMap = new Map(allPos.map((p: any) => [p.parsedName.toLowerCase(), p.sku]))
+    for (const name of createdNames) {
+      const sku = skuMap.get(name.toLowerCase()) ?? 'N/A'
+      successes.push(`✅ ${name} (SKU: ${sku})`)
+    }
+  }
+
+  let msg = `*Creation results:*\n\n`
+  if (successes.length > 0) msg += successes.join('\n') + '\n'
+  if (failures.length > 0) msg += '\n' + failures.join('\n') + '\n'
+  await sendLong(ctx, msg)
+
+  if (successes.length > 0) {
+    // Look up variation IDs so we can offer purchase order creation
+    const purchaseLines: NonNullable<SessionData['pendingPurchaseLines']> = []
+    const createdRows = newRows.filter(r => createdNames.includes(r.posName))
+    for (const row of createdRows) {
+      const match = await pos.searchProductForPurchase(row.posName, invoiceLocationId ?? undefined)
+      if (match) {
+        purchaseLines.push({
+          posName: row.posName,
+          productId: match.productId,
+          variationId: match.variationId,
+          unitId: row.categorySlug === 'edge-tapes' ? '2097' : '2094',
+          quantity: row.quantity,
+          usdUnitPrice: row.usdUnitPrice,
+          face: row.face,
+        })
+      }
+    }
+
+    ctx.session.pendingInvoiceCategorySlugs = categorySlugs
+    if (purchaseLines.length > 0) {
+      ctx.session.pendingPurchaseLines = purchaseLines
+      ctx.session.pendingPurchaseExchangeRate = rate
+      ctx.session.pendingPurchaseLocationId = invoiceLocationId ?? '928'
+    }
+
+    await ctx.reply(
+      `What would you like to do next?`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('🔄 Sync to website', 'confirm_invoice_sync')],
+        ...(purchaseLines.length > 0
+          ? [[Markup.button.callback('📦 Create purchase order', 'invoice_start_purchase')]]
+          : []),
+        [Markup.button.callback('Skip', 'cancel_action')],
+      ])
+    )
+  }
+})
+
+bot.action('confirm_invoice_sync', async ctx => {
+  await ctx.answerCbQuery()
+  const categorySlugs = ctx.session.pendingInvoiceCategorySlugs ?? []
+  const hasPurchaseLines = (ctx.session.pendingPurchaseLines?.length ?? 0) > 0
+  ctx.session.pendingInvoiceCategorySlugs = undefined
+
+  await ctx.reply(`🔄 Syncing new products to Sanity…`)
+  const results: string[] = []
+  for (const slug of categorySlugs) {
+    try {
+      const result = await runSync(slug)
+      results.push(`*${slug}*: ✨ ${result.created} created, 🔄 ${result.updated} updated, ⚠️ ${result.skipped} skipped`)
+    } catch (err: any) {
+      results.push(`*${slug}*: ❌ ${err.message ?? err}`)
+    }
+  }
+  if (results.length > 0) {
+    await ctx.reply(`✅ *Sync complete!*\n\n` + results.join('\n'), { parse_mode: 'Markdown' })
+  } else {
+    await ctx.reply('Nothing to sync.')
+  }
+
+  if (hasPurchaseLines) {
+    await ctx.reply(
+      `Also create a purchase order for these ${ctx.session.pendingPurchaseLines?.length} products?`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('📦 Yes, create purchase order', 'invoice_start_purchase')],
+        [Markup.button.callback('Skip', 'cancel_action')],
+      ])
+    )
+  } else {
+    ctx.session = {}
+  }
+})
+
+bot.action('invoice_start_purchase', async ctx => {
+  await ctx.answerCbQuery()
+  const total = ctx.session.pendingPurchaseLines?.length ?? 0
+  if (total === 0) {
+    await ctx.reply('No products to create a purchase order for.')
+    ctx.session = {}
+    return
+  }
+  ctx.session.step = 'await_purchase_supplier'
+  await ctx.reply(
+    `✅ *${total} products* ready for the purchase order.\n\n*Which supplier is this invoice from?*`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.reply(
+    'Select supplier:',
+    Markup.inlineKeyboard([
+      ...SUPPLIERS.map(s => [Markup.button.callback(s.name, `purchase_supplier_${s.id}`)]),
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
+    ])
+  )
+})
+
+bot.action(/^inv_loc_(928|952)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_invoice_location') return
+
+  ctx.session.pendingInvoiceLocationId = ctx.match[1]
+  ctx.session.step = 'await_exchange_rate_for_invoice'
+
+  await ctx.reply(
+    `✅ Location: *${LOCATION_LABELS[ctx.match[1]]} (${ctx.match[1]})*\n\nWhat exchange rate *(NGN/USD)* should I use for purchase prices?\n_Example: type \`1400\` for ₦1,400 per USD_`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+bot.action(/^purpre_loc_(928|952)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_prelookup_location') return
+  ctx.session.pendingPurchaseLocationId = ctx.match[1]
+  await ctx.reply(
+    `✅ Location: *${LOCATION_LABELS[ctx.match[1]]} (${ctx.match[1]})*\n\n🔍 Looking up ${ctx.session.pendingPurchaseInvoiceRows?.length ?? 0} products in POS…`,
+    { parse_mode: 'Markdown' }
+  )
+  await handlePurchaseLookup(ctx)
+})
+
+bot.action('purchase_create_and_continue', async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_missing_confirm') return
+  // Location already captured before the lookup — skip straight to rate entry.
+  ctx.session.step = 'await_purchase_rate'
+  await ctx.reply(EXCHANGE_RATE_PROMPT, { parse_mode: 'Markdown' })
+})
+
+// ── Purchase disambiguation ───────────────────────────────────────────────────
+
+async function afterPurchaseDisambigDone(ctx: BotContext): Promise<void> {
+  const missingRows = ctx.session.pendingPurchaseMissingRows ?? []
+
+  if (missingRows.length > 0) {
+    ctx.session.pendingPurchaseNeedsCreate = true
+    ctx.session.step = 'await_purchase_missing_confirm'
+
+    const found = ctx.session.pendingPurchaseLines?.length ?? 0
+    let msg = `⚠️ *${missingRows.length} product(s) not yet in POS:*\n\n`
+    msg += missingRows.map(r => `• ${r.posName}`).join('\n')
+    if (found > 0) msg += `\n\n*${found} product(s)* are already in POS (or matched).`
+    msg += `\n\nShould I create the ${missingRows.length} missing product(s) and include all in the purchase?`
+    await sendLong(ctx, msg)
+    await ctx.reply(
+      'What would you like to do?',
+      Markup.inlineKeyboard([
+        [Markup.button.callback(`✅ Create ${missingRows.length} & continue`, 'purchase_create_and_continue')],
+        [Markup.button.callback('❌ Cancel', 'cancel_action')],
+      ])
+    )
+    return
+  }
+
+  const total = ctx.session.pendingPurchaseLines?.length ?? 0
+  ctx.session.step = 'await_purchase_supplier'
+  await ctx.reply(
+    `✅ All ${total} products confirmed in POS.\n\n*Which supplier is this invoice from?*`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.reply(
+    'Select supplier:',
+    Markup.inlineKeyboard([
+      ...SUPPLIERS.map(s => [Markup.button.callback(s.name, `purchase_supplier_${s.id}`)]),
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
+    ])
+  )
+}
+
+bot.action(/^pur_disambig_use_(\d+)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_disambig') return
+
+  const queue = ctx.session.pendingPurchaseDisambigQueue ?? []
+  if (queue.length === 0) return
+
+  const idx = parseInt(ctx.match[1], 10)
+  const item = queue[0]
+  const candidate = item.candidates[idx]
+  if (!candidate) {
+    await ctx.answerCbQuery('⚠️ This button is outdated — please use the latest message.')
+    return
+  }
+
+  ctx.session.pendingPurchaseLines = [
+    ...(ctx.session.pendingPurchaseLines ?? []),
+    {
+      posName: item.row.posName,
+      productId: candidate.productId,
+      variationId: candidate.variationId,
+      unitId: item.row.categorySlug === 'edge-tapes' ? '2097' : '2094',
+      quantity: item.row.quantity,
+      usdUnitPrice: item.row.usdUnitPrice,
+      face: item.row.face,
+    },
+  ]
+  ctx.session.pendingPurchaseDisambigQueue = queue.slice(1)
+
+  if ((ctx.session.pendingPurchaseDisambigQueue ?? []).length > 0) {
+    await showNextPurchaseDisambig(ctx)
+  } else {
+    await afterPurchaseDisambigDone(ctx)
+  }
+})
+
+bot.action('pur_disambig_create', async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_disambig') return
+
+  const queue = ctx.session.pendingPurchaseDisambigQueue ?? []
+  if (queue.length === 0) return
+
+  const item = queue[0]
+  ctx.session.pendingPurchaseMissingRows = [
+    ...(ctx.session.pendingPurchaseMissingRows ?? []),
+    item.row,
+  ]
+  ctx.session.pendingPurchaseDisambigQueue = queue.slice(1)
+
+  if ((ctx.session.pendingPurchaseDisambigQueue ?? []).length > 0) {
+    await showNextPurchaseDisambig(ctx)
+  } else {
+    await afterPurchaseDisambigDone(ctx)
+  }
+})
+
+// ── Invoice disambiguation ────────────────────────────────────────────────────
+
+async function afterInvoiceDisambigDone(ctx: BotContext): Promise<void> {
+  const newRows = ctx.session.pendingInvoiceNewRows ?? []
+
+  if (newRows.length === 0) {
+    await ctx.reply('✅ All products matched to existing POS entries. Nothing to create.')
+    ctx.session = {}
+    return
+  }
+
+  let msg = `🆕 *${newRows.length} product(s) to create:*\n\n`
+  for (const r of newRows) {
+    msg += `• ${r.posName} (PDF: ${r.pdfName})\n`
+  }
+
+  ctx.session.step = 'await_invoice_location'
+  ctx.session.pendingInvoiceCategorySlugs = [...new Set(newRows.map(r => r.categorySlug))]
+
+  await sendLong(ctx, msg)
+  await ctx.reply('Which location should these products be created at?', locationKeyboard('inv_loc'))
+}
+
+bot.action('inv_disambig_skip', async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_invoice_disambig') return
+
+  const queue = ctx.session.pendingInvoiceDisambigQueue ?? []
+  if (queue.length === 0) return
+
+  // "Use existing" — skip creation of this row
+  ctx.session.pendingInvoiceDisambigQueue = queue.slice(1)
+
+  if ((ctx.session.pendingInvoiceDisambigQueue ?? []).length > 0) {
+    await showNextInvoiceDisambig(ctx)
+  } else {
+    await afterInvoiceDisambigDone(ctx)
+  }
+})
+
+bot.action('inv_disambig_create', async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_invoice_disambig') return
+
+  const queue = ctx.session.pendingInvoiceDisambigQueue ?? []
+  if (queue.length === 0) return
+
+  const item = queue[0]
+  ctx.session.pendingInvoiceNewRows = [
+    ...(ctx.session.pendingInvoiceNewRows ?? []),
+    item.row,
+  ]
+  ctx.session.pendingInvoiceDisambigQueue = queue.slice(1)
+
+  if ((ctx.session.pendingInvoiceDisambigQueue ?? []).length > 0) {
+    await showNextInvoiceDisambig(ctx)
+  } else {
+    await afterInvoiceDisambigDone(ctx)
+  }
+})
+
+bot.action(/^purchase_supplier_(\d+)$/, async ctx => {
+  await ctx.answerCbQuery()
+  const supplierId = ctx.match[1]
+  const supplier = SUPPLIERS.find(s => s.id === supplierId)
+  if (!supplier || ctx.session.step !== 'await_purchase_supplier') return
+
+  ctx.session.pendingPurchaseSupplierId = supplierId
+  ctx.session.pendingPurchaseSupplierName = supplier.name
+
+  await ctx.reply(`✅ Supplier: *${supplier.name}*`, { parse_mode: 'Markdown' })
+
+  // If rate already known (e.g. from invoice PDF flow), skip straight to status
+  if (ctx.session.pendingPurchaseExchangeRate) {
+    ctx.session.step = 'await_purchase_status'
+    await ctx.reply(
+      `✅ Rate: ₦${ctx.session.pendingPurchaseExchangeRate.toLocaleString()}/USD (from invoice)\n\nWhat is the purchase status?`,
+      { parse_mode: 'Markdown' }
+    )
+    await ctx.reply(
+      'Select status:',
+      Markup.inlineKeyboard([[
+        Markup.button.callback('📦 Ordered',  'purchase_status_ordered'),
+        Markup.button.callback('✅ Received', 'purchase_status_received'),
+        Markup.button.callback('⏳ Pending',  'purchase_status_pending'),
+      ]])
+    )
+  } else {
+    ctx.session.step = 'await_purchase_rate'
+    await ctx.reply(EXCHANGE_RATE_PROMPT, { parse_mode: 'Markdown' })
+  }
+})
+
+bot.action(/^purchase_status_(ordered|received|pending)$/, async ctx => {
+  await ctx.answerCbQuery()
+  const status = ctx.match[1] as 'ordered' | 'received' | 'pending'
+  if (ctx.session.step !== 'await_purchase_status') return
+
+  ctx.session.pendingPurchaseStatus = status
+  ctx.session.step = 'await_purchase_shipping'
+
+  await ctx.reply(
+    `✅ Status: *${status}*\n\nShipping charges in Naira? (type \`0\` to skip)`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+bot.action('confirm_purchase_create', async ctx => {
+  await ctx.answerCbQuery()
+
+  const lines        = ctx.session.pendingPurchaseLines ?? []
+  const rate         = ctx.session.pendingPurchaseExchangeRate ?? 0
+  const supplierId   = ctx.session.pendingPurchaseSupplierId ?? ''
+  const supplierName = ctx.session.pendingPurchaseSupplierName ?? ''
+  const status       = ctx.session.pendingPurchaseStatus ?? 'ordered'
+  const shipping     = ctx.session.pendingPurchaseShipping ?? 0
+  const shLabel      = ctx.session.pendingPurchaseShippingLabel ?? ''
+  const purchaseLocationId = ctx.session.pendingPurchaseLocationId
+  ctx.session = {}
+
+  if (lines.length === 0 || rate <= 0 || !supplierId) {
+    await ctx.reply('Session expired. Please start again with /purchase.')
+    return
+  }
+
+  await ctx.reply('✨ Creating purchase order in POS…')
+
+  let pos: POSClient
+  try {
+    pos = createPOSClientFromEnv()
+    await pos.login()
+  } catch (err: any) {
+    await ctx.reply(`❌ POS login failed: ${err.message ?? err}`)
+    return
+  }
+
+  const purchaseLines: PurchaseLine[] = lines.map(line => ({
+    productId:     line.productId,
+    variationId:   line.variationId,
+    quantity:      line.quantity,
+    unitId:        line.unitId,
+    purchasePrice: Math.round(line.usdUnitPrice * rate),
+    sellingPrice:  line.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL,
+  }))
+
+  try {
+    const result = await pos.createPurchase({
+      contactId:       supplierId,
+      status,
+      locationId:      purchaseLocationId,
+      shippingCharges: shipping,
+      shippingDetails: shLabel,
+      lines:           purchaseLines,
+    })
+    const posUrl = (process.env.INVENTORY_APP_URL || 'https://pos.virtualrx.com.ng').replace(/\/$/, '')
+    await ctx.reply(
+      `✅ *Purchase order created!*\n\n` +
+      `*Ref:* ${result.refNo}\n` +
+      `*Supplier:* ${supplierName}\n` +
+      `*Status:* ${status}\n` +
+      `*Products:* ${lines.length}\n` +
+      `*View:* ${posUrl}/purchases/${result.purchaseId}`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ Failed to create purchase: ${err.message ?? err}`)
+  }
 })
 
 bot.action('cancel_action', async ctx => {
@@ -1566,6 +2507,167 @@ bot.on('text', async ctx => {
     return
   }
 
+  if (step === 'await_exchange_rate_for_invoice') {
+    const input = ctx.message.text.trim().replace(/[,_\s]/g, '')
+    const rate = parseFloat(input)
+
+    if (isNaN(rate) || rate <= 0) {
+      await ctx.reply(
+        'Please enter a valid exchange rate (numbers only, e.g. `1400`).',
+        { parse_mode: 'Markdown' }
+      )
+      return
+    }
+
+    const newRows = ctx.session.pendingInvoiceNewRows ?? []
+    ctx.session.pendingInvoiceExchangeRate = rate
+    ctx.session.step = 'await_invoice_confirm'
+
+    let msg = `💱 *Exchange rate: ₦${rate.toLocaleString()} / USD*\n\n`
+    msg += `*${newRows.length} products to be created in POS:*\n\n`
+    for (const r of newRows) {
+      const costPrice  = Math.round(r.usdUnitPrice * rate)
+      const sellPrice = r.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
+      msg += `• *${r.posName}*\n`
+      msg += `  Cost: ₦${costPrice.toLocaleString()} (US$${r.usdUnitPrice} × ${rate}) | Sell: ₦${sellPrice.toLocaleString()}\n\n`
+    }
+
+    await sendLong(ctx, msg)
+    await ctx.reply(
+      `Create these ${newRows.length} products in POS?`,
+      Markup.inlineKeyboard([
+        Markup.button.callback(`✅ Yes, create ${newRows.length}`, 'confirm_invoice_create'),
+        Markup.button.callback('❌ Cancel', 'cancel_action'),
+      ])
+    )
+    return
+  }
+
+  if (step === 'await_invoice_confirm') {
+    await ctx.reply(
+      'Please use the buttons above to confirm or cancel, or type /cancel to abort.'
+    )
+    return
+  }
+
+  if (step === 'await_purchase_file') {
+    await ctx.reply('Please send the supplier invoice PDF, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_missing_confirm') {
+    await ctx.reply('Please use the buttons above to choose, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_disambig') {
+    await ctx.reply('Please use the buttons above to choose, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_invoice_disambig') {
+    await ctx.reply('Please use the buttons above to choose, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_add_location') {
+    await ctx.reply('Please select a location using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_add_category') {
+    await ctx.reply('Please select a category using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_invoice_location') {
+    await ctx.reply('Please select a location using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_prelookup_location') {
+    await ctx.reply('Please select a location using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_supplier') {
+    await ctx.reply('Please select a supplier using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_rate') {
+    const input = ctx.message.text.trim().replace(/[,_\s]/g, '')
+    const rate = parseFloat(input)
+    if (isNaN(rate) || rate <= 0) {
+      await ctx.reply(
+        'Please enter a valid exchange rate (numbers only, e.g. `1400`).',
+        { parse_mode: 'Markdown' }
+      )
+      return
+    }
+    ctx.session.pendingPurchaseExchangeRate = rate
+
+    if (ctx.session.pendingPurchaseNeedsCreate) {
+      await createMissingAndContinue(ctx, rate)
+    } else {
+      ctx.session.step = 'await_purchase_status'
+      await ctx.reply(
+        `✅ Rate: ₦${rate.toLocaleString()}/USD\n\nWhat is the purchase status?`,
+        { parse_mode: 'Markdown' }
+      )
+      await ctx.reply(
+        'Select status:',
+        Markup.inlineKeyboard([[
+          Markup.button.callback('📦 Ordered',  'purchase_status_ordered'),
+          Markup.button.callback('✅ Received', 'purchase_status_received'),
+          Markup.button.callback('⏳ Pending',  'purchase_status_pending'),
+        ]])
+      )
+    }
+    return
+  }
+
+  if (step === 'await_purchase_status') {
+    await ctx.reply('Please select a status using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_shipping') {
+    const input = ctx.message.text.trim().replace(/[₦,\s]/g, '')
+    const amount = parseFloat(input)
+    if (isNaN(amount) || amount < 0) {
+      await ctx.reply('Please enter a valid amount (or `0` to skip).', { parse_mode: 'Markdown' })
+      return
+    }
+    ctx.session.pendingPurchaseShipping = amount
+    if (amount > 0) {
+      ctx.session.step = 'await_purchase_shipping_label'
+      await ctx.reply(
+        `✅ Shipping: ₦${amount.toLocaleString()}\n\nWhat label for the shipping? (e.g. \`Clearing\`, \`Freight\`) Or type \`skip\`.`,
+        { parse_mode: 'Markdown' }
+      )
+    } else {
+      ctx.session.step = 'await_purchase_confirm'
+      await showPurchaseSummary(ctx)
+    }
+    return
+  }
+
+  if (step === 'await_purchase_shipping_label') {
+    const label = ctx.message.text.trim()
+    ctx.session.pendingPurchaseShippingLabel = label.toLowerCase() === 'skip' ? '' : label
+    ctx.session.step = 'await_purchase_confirm'
+    await showPurchaseSummary(ctx)
+    return
+  }
+
+  if (step === 'await_purchase_confirm') {
+    await ctx.reply(
+      'Please use the buttons above to confirm or cancel, or type /cancel to abort.'
+    )
+    return
+  }
+
   if (step === 'await_product_text') {
     ctx.session.step = undefined
     const text = ctx.message.text
@@ -1664,9 +2766,9 @@ bot.on('document', async ctx => {
   const filename = doc.file_name ?? ''
   const ext = filename.split('.').pop()?.toLowerCase() ?? ''
 
-  if (!['csv', 'xlsx', 'xls'].includes(ext)) {
+  if (!['csv', 'xlsx', 'xls', 'pdf'].includes(ext)) {
     await ctx.reply(
-      "Couldn't parse this file. Please send a CSV or Excel file (.csv, .xlsx, .xls)."
+      "Couldn't parse this file. Please send a CSV, Excel (.csv, .xlsx, .xls) or PDF file."
     )
     return
   }
@@ -1678,13 +2780,133 @@ bot.on('document', async ctx => {
     const fileLink = await ctx.telegram.getFileLink(doc.file_id)
     const response = await fetch(fileLink.href)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const arrayBuffer = await response.arrayBuffer()
-    fileBuffer = Buffer.from(arrayBuffer)
+    fileBuffer = Buffer.from(await response.arrayBuffer())
   } catch (err: any) {
     await ctx.reply(`❌ Failed to download file: ${err.message ?? err}`)
     return
   }
 
+  // Route to purchase order flow
+  if (ctx.session.step === 'await_purchase_file') {
+    await handlePurchaseFile(ctx, fileBuffer, ext)
+    return
+  }
+
+  // PDF: check if it's a supplier invoice first
+  if (ext === 'pdf') {
+    let rawText = ''
+    try {
+      const parser = new PDFParse({ data: fileBuffer })
+      const result = await parser.getText()
+      await parser.destroy()
+      rawText = result.text
+    } catch (err: any) {
+      await ctx.reply(`❌ Failed to read PDF: ${err.message ?? err}`)
+      return
+    }
+
+    const invoiceRows = parseInvoiceRowsRich(rawText)
+
+    if (invoiceRows.length > 0) {
+      // Invoice PDF flow
+      await ctx.reply(`🔍 Detected invoice format. Checking ${invoiceRows.length} products against POS…`)
+
+      let pos: any
+      try {
+        pos = createPOSClientFromEnv()
+        await pos.login()
+        const allPos = await pos.getProducts()
+        const posNameMap = new Map(allPos.map((p: any) => [p.parsedName.toLowerCase(), p]))
+
+        const existing: InvoiceRow[] = []
+        const newRows: InvoiceRow[] = []
+        const invoiceDisambigQueue: NonNullable<SessionData['pendingInvoiceDisambigQueue']> = []
+
+        for (const row of invoiceRows) {
+          if (posNameMap.has(row.posName.toLowerCase())) {
+            existing.push(row)
+            continue
+          }
+
+          // Near-match check: strip size suffix and look for same base color
+          const baseColorMatch = row.posName.match(TAPE_SIZE_SUFFIX_RE)
+          if (baseColorMatch) {
+            const baseColorLower = baseColorMatch[1].trim().toLowerCase()
+            const nearMatchProducts = allPos.filter((p: any) => {
+              const pNameLower = p.parsedName.toLowerCase()
+              return pNameLower !== row.posName.toLowerCase() &&
+                (pNameLower === baseColorLower || pNameLower.startsWith(baseColorLower + ' ')) &&
+                !TAPE_SIZE_SUFFIX_RE.test(pNameLower)
+            })
+            if (nearMatchProducts.length > 0) {
+              invoiceDisambigQueue.push({
+                row,
+                candidates: nearMatchProducts.map((p: any) => ({ posName: p.parsedName })),
+              })
+              continue
+            }
+          }
+
+          newRows.push(row)
+        }
+
+        if (invoiceDisambigQueue.length > 0) {
+          let msg = `📋 *${existing.length} already in POS* — will be skipped\n`
+          if (newRows.length > 0) msg += `🆕 *${newRows.length} confirmed new*\n`
+          msg += `⚠️ *${invoiceDisambigQueue.length} need disambiguation*`
+
+          ctx.session.step = 'await_invoice_disambig'
+          ctx.session.pendingInvoiceNewRows = newRows
+          ctx.session.pendingInvoiceDisambigQueue = invoiceDisambigQueue
+
+          await sendLong(ctx, msg)
+          await showNextInvoiceDisambig(ctx)
+          return
+        }
+
+        if (newRows.length === 0) {
+          await ctx.reply(
+            `✅ All ${invoiceRows.length} products already exist in POS. Nothing to create.`,
+            { parse_mode: 'Markdown' }
+          )
+          ctx.session = {}
+          return
+        }
+
+        // Show the new products
+        let msg = `📋 *${existing.length} already in POS* — will be skipped\n`
+        msg += `🆕 *${newRows.length} new products* to be created:\n\n`
+        for (const r of newRows) {
+          msg += `• ${r.posName} (PDF: ${r.pdfName})\n`
+        }
+
+        ctx.session.step = 'await_invoice_location'
+        ctx.session.pendingInvoiceNewRows = newRows
+        ctx.session.pendingInvoiceCategorySlugs = [...new Set(newRows.map(r => r.categorySlug))]
+
+        await sendLong(ctx, msg)
+        await ctx.reply('Which location should these products be created at?', locationKeyboard('inv_loc'))
+        return
+      } catch (err: any) {
+        await ctx.reply(`❌ POS check failed: ${err.message ?? err}`)
+        ctx.session = {}
+        return
+      }
+    }
+
+    // Not invoice format — fall back to text parsing (rawText already extracted above)
+    let parsed: ParsedProduct[]
+    try {
+      parsed = parseTextInput(rawText)
+    } catch (err: any) {
+      await ctx.reply("Couldn't parse this PDF. Please check the file format.")
+      return
+    }
+    await checkAndSummarise(ctx, parsed, `Parsed ${parsed.length} products from ${filename}`)
+    return
+  }
+
+  // CSV / Excel
   let parsed: ParsedProduct[]
   try {
     if (ext === 'csv') {
@@ -1693,10 +2915,9 @@ bot.on('document', async ctx => {
       parsed = parseExcel(fileBuffer)
     }
   } catch (err: any) {
-    await ctx.reply("Couldn't parse this file. Please send a CSV or Excel file.")
+    await ctx.reply("Couldn't parse this file. Please send a CSV, Excel, or PDF file.")
     return
   }
-
   await checkAndSummarise(ctx, parsed, `Parsed ${parsed.length} products from ${filename}`)
 })
 

@@ -25,6 +25,26 @@ export interface CreateProductInput {
   sellingPrice: number
   categoryId?: string
   unitId?: string
+  locationId?: string  // override LOCATION_ID (e.g. '928' for purchase-order flow)
+}
+
+export interface PurchaseLine {
+  productId: string
+  variationId: string
+  quantity: number
+  unitId: string
+  purchasePrice: number    // NGN cost price per unit
+  sellingPrice: number     // NGN selling price per unit
+}
+
+export interface CreatePurchaseInput {
+  contactId: string                                   // numeric DB ID of supplier
+  status: 'ordered' | 'received' | 'pending'
+  locationId?: string
+  refNo?: string
+  shippingCharges?: number
+  shippingDetails?: string
+  lines: PurchaseLine[]
 }
 
 const BOARD_CATEGORY_ID = '4529'
@@ -36,6 +56,13 @@ const LOCATION_ID = '952'
 function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, '').trim()
 }
+
+// POS search results return "Product Name - <numeric-id>"; these strip that trailer.
+const stripPOSSuffix = (t: string) => t.replace(/\s+-\s+\d+$/, '').toLowerCase()
+const originalPOSName = (t: string) => t.replace(/\s+-\s+\d+$/, '').trim()
+
+// Keep in sync with TAPE_SIZE_SUFFIX_RE in parse-product-doc.ts
+const TAPE_SIZE_SUFFIX_RE = /^(.+?)\s+\d+MM(?:\s+Gloss)?$/i
 
 function parseStockQty(raw: string): number {
   return parseFloat(raw.match(/^([\d.]+)/)?.[1] ?? '0')
@@ -112,6 +139,13 @@ export class POSClient {
     if (!location.includes('/home')) {
       throw new Error(`POS login failed — redirected to: ${location || '(no redirect)'}`)
     }
+
+    // Follow the redirect to /home so the session is fully initialised
+    const homeRes = await fetch(location, {
+      headers: { Cookie: this.cookieHeader() },
+      redirect: 'manual',
+    })
+    this.updateJar(homeRes.headers)
   }
 
   async getProducts(): Promise<POSProduct[]> {
@@ -138,6 +172,7 @@ export class POSClient {
     const isEdgeTape = /\d+\s*(mm|MM)/.test(input.name)
     const categoryId = input.categoryId ?? (isEdgeTape ? EDGE_TAPE_CATEGORY_ID : BOARD_CATEGORY_ID)
     const unitId = input.unitId ?? (isEdgeTape ? EDGE_TAPE_UNIT_ID : BOARD_UNIT_ID)
+    const locationId = input.locationId ?? LOCATION_ID
 
     const body = new URLSearchParams({
       _token: csrf,
@@ -146,7 +181,7 @@ export class POSClient {
       barcode_type: 'C128',
       unit_id: unitId,
       category_id: categoryId,
-      'product_locations[]': LOCATION_ID,
+      'product_locations[]': locationId,
       enable_stock: '1',
       alert_quantity: '5',
       tax_type: 'exclusive',
@@ -175,15 +210,185 @@ export class POSClient {
       throw new Error(`createProduct failed — status ${res.status}, location: ${location}`)
     }
 
-    const products = await this.getProducts()
-    const created = products.find(
-      p => p.parsedName.toLowerCase() === input.name.toLowerCase()
+    return { sku: '', name: input.name }
+  }
+
+  async searchProductForPurchase(
+    name: string,
+    locationId?: string
+  ): Promise<{ productId: string; variationId: string } | null> {
+    const locationSuffix = locationId ? `&location_id=${encodeURIComponent(locationId)}` : ''
+    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(name)}${locationSuffix}`
+    const res = await fetch(url, {
+      headers: {
+        Cookie: this.cookieHeader(),
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    })
+    if (!res.ok) return null
+    const results = await res.json() as Array<{
+      id: string; text: string; product_id: string; variation_id: string
+    }>
+    if (results.length === 0) return null
+    const nameLower = name.toLowerCase()
+    const exact = results.find(r => stripPOSSuffix(r.text) === nameLower)
+    if (!exact) return null
+    return { productId: String(exact.product_id), variationId: String(exact.variation_id) }
+  }
+
+  async findProductForPurchase(
+    name: string,
+    locationId?: string
+  ): Promise<{
+    exact: { productId: string; variationId: string } | null
+    nearMatches: Array<{ productId: string; variationId: string; posName: string }>
+  }> {
+    // Exact-match leg — delegate to the existing method to avoid duplication
+    const exactResult = await this.searchProductForPurchase(name, locationId)
+    if (exactResult) return { exact: exactResult, nearMatches: [] }
+
+    // No exact match — look for near-matches via base color (strip trailing size suffix)
+    const baseColorMatch = name.match(TAPE_SIZE_SUFFIX_RE)
+    if (!baseColorMatch) return { exact: null, nearMatches: [] }
+    const baseColor = baseColorMatch[1].trim()
+
+    const locationSuffix = locationId ? `&location_id=${encodeURIComponent(locationId)}` : ''
+    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(baseColor)}${locationSuffix}`
+    const res = await fetch(url, {
+      headers: { Cookie: this.cookieHeader(), 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    if (!res.ok) return { exact: null, nearMatches: [] }
+    const baseResults = await res.json() as Array<{ id: string; text: string; product_id: string; variation_id: string }>
+
+    const nameLower = name.toLowerCase()
+    const baseColorLower = baseColor.toLowerCase()
+    const nearMatches = baseResults
+      .map(r => ({ r, cleanLower: stripPOSSuffix(r.text), cleanOrig: originalPOSName(r.text) }))
+      .filter(({ cleanLower }) =>
+        cleanLower !== nameLower &&
+        (cleanLower === baseColorLower || cleanLower.startsWith(baseColorLower + ' ')) &&
+        !TAPE_SIZE_SUFFIX_RE.test(cleanLower)  // exclude candidates that have their own size suffix
+      )
+      .map(({ r, cleanOrig }) => ({
+        productId: String(r.product_id),
+        variationId: String(r.variation_id),
+        posName: cleanOrig,
+      }))
+
+    return { exact: null, nearMatches }
+  }
+
+  async createPurchase(input: CreatePurchaseInput): Promise<{ refNo: string; purchaseId: string }> {
+    const csrf = await this.getCsrf('/purchases/create')
+    const locationId = input.locationId ?? '928'
+
+    const now = new Date()
+    const day    = String(now.getDate()).padStart(2, '0')
+    const month  = String(now.getMonth() + 1).padStart(2, '0')
+    const year   = now.getFullYear()
+    const hours  = String(now.getHours()).padStart(2, '0')
+    const mins   = String(now.getMinutes()).padStart(2, '0')
+    const transactionDate = `${day}-${month}-${year} ${hours}:${mins}`
+
+    const totalBeforeTax = input.lines.reduce(
+      (sum, l) => sum + l.purchasePrice * l.quantity, 0
     )
-    if (!created) {
-      throw new Error(`Product created but not found in list: "${input.name}"`)
+    const shippingCharges = input.shippingCharges ?? 0
+    const finalTotal = totalBeforeTax + shippingCharges
+
+    const body = new URLSearchParams({
+      _token:           csrf,
+      contact_id:       input.contactId,
+      ref_no:           input.refNo ?? '',
+      transaction_date: transactionDate,
+      status:           input.status,
+      location_id:      locationId,
+      exchange_rate:    '1',
+      pay_term_number:  '',
+      pay_term_type:    '',
+      discount_type:    '',
+      discount_amount:  '0',
+      tax_id:           '',
+      tax_amount:       '0',
+      shipping_charges: String(shippingCharges),
+      shipping_details: input.shippingDetails ?? '',
+      additional_notes: '',
+      total_before_tax: totalBeforeTax.toFixed(2),
+      final_total:      finalTotal.toFixed(2),
+      // Payment section is required by UltimatePOS V5 even for ordered/pending status.
+      // Sending amount=0 records the purchase as unpaid.
+      'payment[0][amount]':   '0',
+      'payment[0][paid_on]':  transactionDate,
+      'payment[0][method]':   'cash',
+    })
+
+    input.lines.forEach((line, i) => {
+      body.append(`purchases[${i}][product_id]`,          line.productId)
+      body.append(`purchases[${i}][variation_id]`,        line.variationId)
+      body.append(`purchases[${i}][quantity]`,            String(line.quantity))
+      body.append(`purchases[${i}][product_unit_id]`,     line.unitId)
+      body.append(`purchases[${i}][sub_unit_id]`,         line.unitId)
+      body.append(`purchases[${i}][pp_without_discount]`, String(line.purchasePrice))
+      body.append(`purchases[${i}][discount_percent]`,    '0.00')
+      body.append(`purchases[${i}][purchase_price]`,      String(line.purchasePrice))
+      body.append(`purchases[${i}][purchase_line_tax_id]`, '')
+      body.append(`purchases[${i}][item_tax]`,            '0')
+      body.append(`purchases[${i}][purchase_price_inc_tax]`, String(line.purchasePrice))
+      body.append(`purchases[${i}][profit_percent]`,      '48')
+      body.append(`purchases[${i}][default_sell_price]`,  String(line.sellingPrice))
+    })
+
+    const res = await fetch(`${this.baseUrl}/purchases`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie: this.cookieHeader(),
+      },
+      body,
+      redirect: 'manual',
+    })
+    this.updateJar(res.headers)
+
+    const location = res.headers.get('location') ?? ''
+
+    // UltimatePOS V5 redirects to the purchase LIST on success (not /purchases/{id}).
+    // Confirm success by reading the flash message from the redirect page.
+    if (res.status !== 302) {
+      throw new Error(`createPurchase failed — status ${res.status}`)
     }
 
-    return { sku: created.sku, name: created.parsedName }
+    const dest = location.startsWith('http') ? location : `${this.baseUrl}${location}`
+    const redirectRes = await fetch(dest, { headers: { Cookie: this.cookieHeader() } })
+    this.updateJar(redirectRes.headers)
+    const redirectHtml = await redirectRes.text()
+    const flashMsg = redirectHtml.match(/data-msg="([^"]+)"/)?.[1] ?? ''
+    if (!flashMsg.toLowerCase().includes('added successfully') && !flashMsg.toLowerCase().includes('created')) {
+      throw new Error(`createPurchase failed — flash: "${flashMsg}"`)
+    }
+
+    // Fetch the most recent purchase from the list to get ref_no and ID.
+    // The list returns purchases in reverse chronological order by default.
+    const listRes = await fetch(`${this.baseUrl}/purchases?per_page=5`, {
+      headers: { Cookie: this.cookieHeader(), 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    const listData = await listRes.json() as { data?: Array<{ ref_no?: string; DT_RowAttr?: { 'data-href'?: string } }> }
+    const purchases = listData.data ?? []
+
+    // Find the purchase with the highest numeric ID (most recently created)
+    let purchaseId = ''
+    let refNo = ''
+    for (const p of purchases) {
+      const href = p.DT_RowAttr?.['data-href'] ?? ''
+      const id = href.match(/\/purchases\/(\d+)/)?.[1] ?? ''
+      if (id && (!purchaseId || parseInt(id) > parseInt(purchaseId))) {
+        purchaseId = id
+        refNo = p.ref_no ?? `#${id}`
+      }
+    }
+
+    if (!purchaseId) refNo = '(unknown)'
+
+    return { refNo, purchaseId }
   }
 
   async checkProductsByName(names: string[]): Promise<{ found: POSProduct[]; missing: string[] }> {

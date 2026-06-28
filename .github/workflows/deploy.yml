@@ -45,11 +45,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy to Vercel
-        uses: amondnet/vercel-action@v25
+      - uses: actions/setup-node@v4
         with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          vercel-args: '--prod'
-          working-directory: ./
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy to Vercel
+        run: npx vercel@latest --prod --token ${{ secrets.VERCEL_TOKEN }} --yes
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+  deploy-bot:
+    name: Deploy Telegram Bot to Hetzner
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy bot scripts to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: 178.104.122.53
+          username: root
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          source: "scripts/telegram-bot.ts,scripts/parse-product-doc.ts,scripts/pos-client.ts,package.json,package-lock.json"
+          target: /opt/modish/
+
+      - name: Rebuild and restart product-bot
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 178.104.122.53
+          username: root
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          script: |
+            cd /opt/modish
+            docker-compose build product-bot
+            docker-compose up -d product-bot
