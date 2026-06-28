@@ -340,13 +340,52 @@ docker compose up -d product-bot   # recreates the container with fresh env
 
 | Command | What it does |
 |---|---|
-| `/add` | Add products to POS — describe in plain text, or upload a CSV/Excel file. Bot checks POS, creates missing products, then offers to sync to the website. |
+| `/add` | Add products to POS — describe in plain text, or upload a CSV/Excel/PDF file. Bot checks POS, shows missing products, asks **which location** (BL0001 928 or BL0002 952), optionally asks **which Sanity category** (when names are ambiguous), creates missing products, then offers to sync to the website. |
 | `/sync` | Sync **all** POS products → Sanity website. New products are created; existing ones get price + stock updated. |
 | `/sync <category>` | Sync one category only (faster, less noisy). |
 | `/syncstock` | Trigger n8n Workflow J: pulls POS stock → updates Airtable Product Catalog → kicks off content generation workflows. |
 | `/find <name>` | Search POS by name (partial match). Returns SKU, price, stock, and a direct edit link. |
 | `/list` | List up to 30 active products from POS. |
 | `/list <category>` | List products filtered to one category. |
+
+### PDF invoice flow (auto-triggered when a supplier PDF is sent)
+
+Send a supplier proforma invoice PDF to the bot at any time (no command needed). The bot:
+
+1. Detects numbered invoice rows (tab-separated: row number · product name · quantities · US$ prices)
+2. Checks all products against POS globally (searches across all locations)
+3. Shows existing (skipped) vs new products with proposed POS names
+4. Asks **which location** to create new products at (BL0001 928 · BL0002 952)
+5. Asks exchange rate (NGN/USD)
+6. Shows price breakdown: cost = USD × rate, selling = ₦14,000 non-glossy / ₦15,000 glossy
+7. User confirms → creates in POS at chosen location → offers Sanity sync
+
+Edge tape invoices are identified automatically by the `0.9×48MM` dimension marker. Product names follow the convention `{Color} 48MM` (non-glossy) or `{Color} 48MM Gloss`.
+
+### Purchase orders
+
+| Command | What it does |
+|---|---|
+| `/purchase` | Create a POS purchase order from a supplier invoice PDF. Full multi-step flow — see details below. |
+
+**`/purchase` flow — all products already in POS:**
+1. Send the invoice PDF
+2. Bot looks up all products (global search) → confirms all found
+3. Select supplier (Mr Adward Shouguang · Miss Susan Sunstar · Mr Soji Soyoye)
+4. Enter exchange rate (NGN/USD)
+5. Select status (Ordered / Received / Pending)
+6. Enter shipping charges (₦, or 0 to skip)
+7. Confirm summary → purchase order created in POS
+
+**`/purchase` flow — some products missing from POS:**
+1. Send the invoice PDF
+2. Bot shows found vs missing products, offers "Create N & continue"
+3. Select **location** to create missing products at (BL0001 928 · BL0002 952)
+4. Enter exchange rate → missing products created at chosen location
+5. Continue to supplier → status → shipping → confirm
+6. Purchase order created at the same location the products were created at
+
+> **Tip:** Use `/purchase` (not the raw PDF drop) when you want to record a purchase order with supplier, cost prices, and shipping. Use the raw PDF drop when you just want to add new products to POS.
 
 ### Add to Sanity directly (no POS)
 

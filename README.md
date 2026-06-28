@@ -116,11 +116,16 @@ A management bot (`scripts/telegram-bot.ts`) runs on Hetzner and handles:
 
 | Command | Purpose |
 |---------|---------|
-| `/add` | Add products to POS via text or CSV/Excel file |
+| `/add` | Add products to POS via text, CSV/Excel, or PDF. Asks which location (BL0001/BL0002) before creating; offers Sanity sync after. |
+| `/purchase` | Create a POS purchase order from a supplier invoice PDF. Handles missing products inline (create & continue), collects supplier / exchange rate / status / shipping, then submits the order. |
 | `/sync [category]` | Push POS → Sanity website |
 | `/syncstock` | Trigger n8n Workflow J (stock → Airtable → content) |
 | `/find <name>` | Search POS, get SKU + edit link |
 | `/list [category]` | Browse POS products |
+
+**Supplier invoice PDF (no command needed):**
+
+Drop any supplier proforma invoice PDF into the chat. The bot auto-detects the invoice format, checks products against POS, asks which location to create new ones at, asks exchange rate, shows a cost/price breakdown, and creates the missing products on confirm. Use `/purchase` instead if you also want to record a formal purchase order with supplier and shipping details.
 
 **Add to Sanity directly (no POS):**
 
