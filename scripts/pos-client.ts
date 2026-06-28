@@ -302,6 +302,7 @@ export class POSClient {
       discount_type:    '',
       discount_amount:  '0',
       tax_id:           '',
+      tax_amount:       '0',
       shipping_charges: String(shippingCharges),
       shipping_details: input.shippingDetails ?? '',
       additional_notes: '',
@@ -324,8 +325,6 @@ export class POSClient {
       body.append(`purchases[${i}][default_sell_price]`,  String(line.sellingPrice))
     })
 
-    console.error('[createPurchase] POST body:', body.toString())
-
     const res = await fetch(`${this.baseUrl}/purchases`, {
       method: 'POST',
       headers: {
@@ -340,13 +339,8 @@ export class POSClient {
     const location = res.headers.get('location') ?? ''
     const purchaseId = location.match(/\/purchases\/(\d+)/)?.[1] ?? ''
 
-    console.error(`[createPurchase] status=${res.status} redirect="${location}"`)
-
     if (res.status !== 302 || !purchaseId) {
-      // Try to read any response body for additional clues
-      let body2 = ''
-      try { body2 = await res.text() } catch { /* ignore */ }
-      throw new Error(`createPurchase failed — status ${res.status}, redirect: "${location || '(none)'}"${body2 ? `\nbody: ${body2.slice(0, 300)}` : ''}`)
+      throw new Error(`createPurchase failed — status ${res.status}, redirect: "${location || '(none)'}"`)
     }
 
     // Fetch the ref_no from the edit page
