@@ -61,6 +61,9 @@ function stripHtml(html: string): string {
 const stripPOSSuffix = (t: string) => t.replace(/\s+-\s+\d+$/, '').toLowerCase()
 const originalPOSName = (t: string) => t.replace(/\s+-\s+\d+$/, '').trim()
 
+// Keep in sync with TAPE_SIZE_SUFFIX_RE in parse-product-doc.ts
+const TAPE_SIZE_SUFFIX_RE = /^(.+?)\s+\d+MM(?:\s+Gloss)?$/i
+
 function parseStockQty(raw: string): number {
   return parseFloat(raw.match(/^([\d.]+)/)?.[1] ?? '0')
 }
@@ -238,7 +241,7 @@ export class POSClient {
     if (exactResult) return { exact: exactResult, nearMatches: [] }
 
     // No exact match — look for near-matches via base color (strip trailing size suffix)
-    const baseColorMatch = name.match(/^(.+?)\s+\d+MM(?:\s+Gloss)?$/i)
+    const baseColorMatch = name.match(TAPE_SIZE_SUFFIX_RE)
     if (!baseColorMatch) return { exact: null, nearMatches: [] }
     const baseColor = baseColorMatch[1].trim()
 
