@@ -259,7 +259,8 @@ export class POSClient {
       .map(r => ({ r, cleanLower: stripPOSSuffix(r.text), cleanOrig: originalPOSName(r.text) }))
       .filter(({ cleanLower }) =>
         cleanLower !== nameLower &&
-        (cleanLower === baseColorLower || cleanLower.startsWith(baseColorLower + ' '))
+        (cleanLower === baseColorLower || cleanLower.startsWith(baseColorLower + ' ')) &&
+        !TAPE_SIZE_SUFFIX_RE.test(cleanLower)  // exclude candidates that have their own size suffix
       )
       .map(({ r, cleanOrig }) => ({
         productId: String(r.product_id),
