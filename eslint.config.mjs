@@ -13,6 +13,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     "jest.config.js",
     "jest.setup.js",
+    "scripts/**",
   ]),
 ]);
 
