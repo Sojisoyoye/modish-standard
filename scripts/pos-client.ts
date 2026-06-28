@@ -203,7 +203,8 @@ export class POSClient {
     name: string,
     locationId?: string
   ): Promise<{ productId: string; variationId: string } | null> {
-    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(name)}&location_id=${encodeURIComponent(locationId ?? '928')}`
+    const locationSuffix = locationId ? `&location_id=${encodeURIComponent(locationId)}` : ''
+    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(name)}${locationSuffix}`
     const res = await fetch(url, {
       headers: {
         Cookie: this.cookieHeader(),
