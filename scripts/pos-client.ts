@@ -200,10 +200,10 @@ export class POSClient {
   }
 
   async searchProductForPurchase(
-    name: string
+    name: string,
+    locationId?: string
   ): Promise<{ productId: string; variationId: string } | null> {
-    // Use location 928 (BL0001) — where purchaseable stock lives
-    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(name)}&location_id=928`
+    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(name)}&location_id=${encodeURIComponent(locationId ?? '928')}`
     const res = await fetch(url, {
       headers: {
         Cookie: this.cookieHeader(),
