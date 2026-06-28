@@ -768,9 +768,12 @@ bot.command('start', async ctx => {
     `👋 *Welcome to Modish Standard Bot!*\n\n` +
     `I manage your POS inventory and sync products to the Modish Standard website.\n\n` +
     `*— Add to POS (tracked inventory):*\n` +
-    `/add — Add products to POS via text or CSV/Excel file\n` +
-    `/purchase — Create a purchase order from a supplier invoice PDF\n` +
+    `/add — Add products via text, CSV/Excel, or PDF → choose location → creates in POS → offers Sanity sync\n` +
+    `/purchase — Create a formal POS purchase order from a supplier invoice PDF (with supplier, rate, shipping)\n` +
     `/sync [category] — Push POS products → Sanity website\n\n` +
+    `*— Supplier invoice PDF (no command needed):*\n` +
+    `Just send a supplier PI/PDF directly. I'll detect the invoice rows, check POS, ask which location to create new products at, ask the exchange rate, show cost/selling prices, then create on confirm.\n` +
+    `Use /purchase instead when you also need to record a formal purchase order.\n\n` +
     `*— Add to Sanity directly (no POS):*\n` +
     `/addsanity <name> — Add a product directly to the website catalog\n` +
     `/addcategory <name> — Create a new product category\n\n` +
@@ -794,6 +797,7 @@ bot.command('start', async ctx => {
     `\`marine-boards\` · \`block-boards\` · \`edge-tapes\`\n` +
     `\`doors\` · \`pu-stone-panels\` · \`accessories\`\n\n` +
     `*Tips:*\n` +
+    `• Both /add and /purchase ask which POS location (BL0001 928 or BL0002 952) before creating products\n` +
     `• /addsanity for products not tracked in inventory (e.g. display items)\n` +
     `• /add for products you want to track in POS stock, then /sync to publish\n` +
     `• /find returns a direct POS edit link for price/stock updates`,
