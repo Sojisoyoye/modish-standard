@@ -117,7 +117,7 @@ A management bot (`scripts/telegram-bot.ts`) runs on Hetzner and handles:
 | Command | Purpose |
 |---------|---------|
 | `/add` | Add products to POS via text, CSV/Excel, or PDF. Asks which location (BL0001/BL0002) before creating; offers Sanity sync after. |
-| `/purchase` | Create a POS purchase order from a supplier invoice PDF. Handles missing products inline (create & continue), collects supplier / exchange rate / status / shipping, then submits the order. |
+| `/purchase` | Create a POS purchase order from a supplier invoice PDF. First selects location (BL0001/BL0002), then looks up all products — ambiguous near-matches are surfaced for confirmation. Handles missing products inline (create & continue), collects supplier / exchange rate / status / shipping, then submits the order. |
 | `/sync [category]` | Push POS → Sanity website |
 | `/syncstock` | Trigger n8n Workflow J (stock → Airtable → content) |
 | `/find <name>` | Search POS, get SKU + edit link |

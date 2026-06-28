@@ -285,6 +285,7 @@ Common causes:
 | Container exits immediately | Script crash on startup | Check logs for stack trace — usually a missing env var |
 | `401 Unauthorized` from Telegram API | Bot token is wrong or revoked | Get a fresh token from @BotFather |
 | POS login failed | Wrong credentials or POS URL | Verify `INVENTORY_APP_*` vars in `.env.bot` |
+| `/purchase` → "Something went wrong, please try again later" | UltimatePOS V5.40 requires `payment[0][amount/paid_on/method]` in the POST body even for `status='ordered'`. Missing payment fields cause the controller's catch block to fire silently. Ensure you are running the latest `pos-client.ts`. |
 | `Insufficient permissions; permission 'create' required` | Sanity token has Write role but not Editor | Generate a new token with the **Editor** role at sanity.io → project → API → Tokens, update `SANITY_API_TOKEN` in `/opt/modish/.env.bot`, restart bot |
 | Other Sanity errors | Wrong project ID, dataset, or token | Verify `NEXT_PUBLIC_SANITY_PROJECT_ID`, `NEXT_PUBLIC_SANITY_DATASET`, and `SANITY_API_TOKEN` in `.env.bot` |
 | `/image` — `Cloudinary upload failed` | Wrong API key or secret | Check `CLOUDINARY_API_KEY` and `CLOUDINARY_API_SECRET` in `.env.bot` against cloudinary.com → Settings → API Keys |
@@ -370,17 +371,19 @@ Edge tape invoices are identified automatically by the `0.9×48MM` dimension mar
 
 **`/purchase` flow — all products already in POS:**
 1. Send the invoice PDF
-2. Bot looks up all products (global search) → confirms all found
-3. Select supplier (Mr Adward Shouguang · Miss Susan Sunstar · Mr Soji Soyoye)
-4. Enter exchange rate (NGN/USD)
-5. Select status (Ordered / Received / Pending)
-6. Enter shipping charges (₦, or 0 to skip)
-7. Confirm summary → purchase order created in POS
+2. Select **location** (BL0001 928 · BL0002 952) — location is chosen before the POS lookup so near-match variation IDs are resolved correctly
+3. Bot looks up all products at that location → confirms all found
+4. If any product name is ambiguous (near-match), bot asks you to confirm the correct POS entry one at a time
+5. Select supplier (Mr Adward Shouguang · Miss Susan Sunstar · Mr Soji Soyoye)
+6. Enter exchange rate (NGN/USD)
+7. Select status (Ordered / Received / Pending)
+8. Enter shipping charges (₦, or 0 to skip)
+9. Confirm summary → purchase order created in POS
 
 **`/purchase` flow — some products missing from POS:**
 1. Send the invoice PDF
-2. Bot shows found vs missing products, offers "Create N & continue"
-3. Select **location** to create missing products at (BL0001 928 · BL0002 952)
+2. Select **location** (BL0001 928 · BL0002 952)
+3. Bot shows found vs missing products, offers "Create N & continue"
 4. Enter exchange rate → missing products created at chosen location
 5. Continue to supplier → status → shipping → confirm
 6. Purchase order created at the same location the products were created at
