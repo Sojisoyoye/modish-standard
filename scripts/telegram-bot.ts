@@ -489,12 +489,12 @@ async function showNextInvoiceDisambig(ctx: BotContext): Promise<void> {
   } else {
     msg += `Near matches found:\n`
     candidates.forEach((c, i) => { msg += `${i + 1}. *${c.posName}*\n` })
-    msg += `\nWhich existing product matches, or create a new one?`
+    msg += `\nIf any of these is the same product, skip creation. Otherwise create a new entry.`
   }
 
   await sendLong(ctx, msg)
   const buttons = [
-    ...candidates.map((c, i) => [Markup.button.callback(`✅ Skip (same as "${c.posName}")`, `inv_disambig_use_${i}`)]),
+    [Markup.button.callback('✅ Use existing (skip creation)', 'inv_disambig_skip')],
     [Markup.button.callback(`🆕 Create "${row.posName}" (new)`, 'inv_disambig_create')],
     [Markup.button.callback('❌ Cancel', 'cancel_action')],
   ]
@@ -604,9 +604,16 @@ async function handlePurchaseFile(ctx: BotContext, fileBuffer: Buffer, ext: stri
     return
   }
 
-  const lookupResults = await Promise.all(
-    invoiceRows.map(async row => ({ row, result: await pos.findProductForPurchase(row.posName) }))
-  )
+  let lookupResults: Array<{ row: InvoiceRow; result: Awaited<ReturnType<POSClient['findProductForPurchase']>> }>
+  try {
+    lookupResults = await Promise.all(
+      invoiceRows.map(async row => ({ row, result: await pos.findProductForPurchase(row.posName) }))
+    )
+  } catch (err: any) {
+    await ctx.reply(`❌ POS lookup failed: ${err.message ?? err}`)
+    ctx.session = {}
+    return
+  }
 
   const found: NonNullable<SessionData['pendingPurchaseLines']> = []
   const missingRows: InvoiceRow[] = []
@@ -2010,7 +2017,10 @@ bot.action(/^pur_disambig_use_(\d+)$/, async ctx => {
   const idx = parseInt(ctx.match[1], 10)
   const item = queue[0]
   const candidate = item.candidates[idx]
-  if (!candidate) return
+  if (!candidate) {
+    await ctx.answerCbQuery('⚠️ This button is outdated — please use the latest message.')
+    return
+  }
 
   ctx.session.pendingPurchaseLines = [
     ...(ctx.session.pendingPurchaseLines ?? []),
@@ -2077,7 +2087,7 @@ async function afterInvoiceDisambigDone(ctx: BotContext): Promise<void> {
   await ctx.reply('Which location should these products be created at?', locationKeyboard('inv_loc'))
 }
 
-bot.action(/^inv_disambig_use_(\d+)$/, async ctx => {
+bot.action('inv_disambig_skip', async ctx => {
   await ctx.answerCbQuery()
   if (ctx.session.step !== 'await_invoice_disambig') return
 
