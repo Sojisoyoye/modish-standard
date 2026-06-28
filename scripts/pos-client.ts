@@ -337,14 +337,14 @@ export class POSClient {
     this.updateJar(res.headers)
 
     const location = res.headers.get('location') ?? ''
-    if (res.status !== 302 || !location.includes('/purchases')) {
-      throw new Error(`createPurchase failed — status ${res.status}, location: ${location || '(none)'}`)
-    }
-
     const purchaseId = location.match(/\/purchases\/(\d+)/)?.[1] ?? ''
 
+    if (res.status !== 302 || !purchaseId) {
+      throw new Error(`createPurchase failed — status ${res.status}, redirect: "${location || '(none)'}"`)
+    }
+
     // Fetch the ref_no from the edit page
-    let refNo = purchaseId ? `#${purchaseId}` : 'auto-generated'
+    let refNo = `#${purchaseId}`
     if (purchaseId) {
       try {
         const editRes = await fetch(`${this.baseUrl}/purchases/${purchaseId}/edit`, {
