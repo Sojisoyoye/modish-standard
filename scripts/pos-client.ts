@@ -224,6 +224,55 @@ export class POSClient {
     return { productId: String(exact.product_id), variationId: String(exact.variation_id) }
   }
 
+  async findProductForPurchase(
+    name: string,
+    locationId?: string
+  ): Promise<{
+    exact: { productId: string; variationId: string } | null
+    nearMatches: Array<{ productId: string; variationId: string; posName: string }>
+  }> {
+    const locationSuffix = locationId ? `&location_id=${encodeURIComponent(locationId)}` : ''
+    const nameLower = name.toLowerCase()
+    const stripSuffix = (t: string) => t.replace(/\s+-\s+\d+$/, '').toLowerCase()
+    const originalName = (t: string) => t.replace(/\s+-\s+\d+$/, '').trim()
+
+    const search = async (term: string) => {
+      const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(term)}${locationSuffix}`
+      const res = await fetch(url, {
+        headers: { Cookie: this.cookieHeader(), 'X-Requested-With': 'XMLHttpRequest' },
+      })
+      if (!res.ok) return []
+      return res.json() as Promise<Array<{ id: string; text: string; product_id: string; variation_id: string }>>
+    }
+
+    const exactResults = await search(name)
+    const exact = exactResults.find(r => stripSuffix(r.text) === nameLower)
+    if (exact) {
+      return { exact: { productId: String(exact.product_id), variationId: String(exact.variation_id) }, nearMatches: [] }
+    }
+
+    // No exact match — look for near-matches via base color (strip trailing size suffix)
+    const baseColorMatch = name.match(/^(.+?)\s+\d+MM(?:\s+Gloss)?$/i)
+    if (!baseColorMatch) return { exact: null, nearMatches: [] }
+    const baseColor = baseColorMatch[1].trim()
+
+    const baseResults = await search(baseColor)
+    const baseColorLower = baseColor.toLowerCase()
+    const nearMatches = baseResults
+      .map(r => ({ r, cleanLower: stripSuffix(r.text), cleanOrig: originalName(r.text) }))
+      .filter(({ cleanLower }) =>
+        cleanLower !== nameLower &&
+        (cleanLower === baseColorLower || cleanLower.startsWith(baseColorLower + ' '))
+      )
+      .map(({ r, cleanOrig }) => ({
+        productId: String(r.product_id),
+        variationId: String(r.variation_id),
+        posName: cleanOrig,
+      }))
+
+    return { exact: null, nearMatches }
+  }
+
   async createPurchase(input: CreatePurchaseInput): Promise<{ refNo: string; purchaseId: string }> {
     const csrf = await this.getCsrf('/purchases/create')
     const locationId = input.locationId ?? '928'
