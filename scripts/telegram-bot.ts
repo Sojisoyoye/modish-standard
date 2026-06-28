@@ -845,7 +845,7 @@ if (!BOT_TOKEN) {
   process.exit(1)
 }
 
-const bot = new Telegraf<BotContext>(BOT_TOKEN)
+const bot = new Telegraf<BotContext>(BOT_TOKEN, { handlerTimeout: 10 * 60 * 1000 })
 
 // Session middleware (in-memory)
 bot.use(session({ defaultSession: (): SessionData => ({}) }))
@@ -1925,21 +1925,49 @@ bot.action('confirm_invoice_create', async ctx => {
   await sendLong(ctx, msg)
 
   if (successes.length > 0) {
+    // Look up variation IDs so we can offer purchase order creation
+    const purchaseLines: NonNullable<SessionData['pendingPurchaseLines']> = []
+    const createdRows = newRows.filter(r => createdNames.includes(r.posName))
+    for (const row of createdRows) {
+      const match = await pos.searchProductForPurchase(row.posName, invoiceLocationId ?? undefined)
+      if (match) {
+        purchaseLines.push({
+          posName: row.posName,
+          productId: match.productId,
+          variationId: match.variationId,
+          unitId: row.categorySlug === 'edge-tapes' ? '2097' : '2094',
+          quantity: row.quantity,
+          usdUnitPrice: row.usdUnitPrice,
+          face: row.face,
+        })
+      }
+    }
+
+    ctx.session.pendingInvoiceCategorySlugs = categorySlugs
+    if (purchaseLines.length > 0) {
+      ctx.session.pendingPurchaseLines = purchaseLines
+      ctx.session.pendingPurchaseExchangeRate = rate
+      ctx.session.pendingPurchaseLocationId = invoiceLocationId ?? '928'
+    }
+
     await ctx.reply(
-      `Sync the new products to the Sanity website?`,
+      `What would you like to do next?`,
       Markup.inlineKeyboard([
-        Markup.button.callback(`🔄 Sync to website`, 'confirm_invoice_sync'),
-        Markup.button.callback('Skip', 'cancel_action'),
+        [Markup.button.callback('🔄 Sync to website', 'confirm_invoice_sync')],
+        ...(purchaseLines.length > 0
+          ? [[Markup.button.callback('📦 Create purchase order', 'invoice_start_purchase')]]
+          : []),
+        [Markup.button.callback('Skip', 'cancel_action')],
       ])
     )
-    ctx.session.pendingInvoiceCategorySlugs = categorySlugs
   }
 })
 
 bot.action('confirm_invoice_sync', async ctx => {
   await ctx.answerCbQuery()
   const categorySlugs = ctx.session.pendingInvoiceCategorySlugs ?? []
-  ctx.session = {}
+  const hasPurchaseLines = (ctx.session.pendingPurchaseLines?.length ?? 0) > 0
+  ctx.session.pendingInvoiceCategorySlugs = undefined
 
   await ctx.reply(`🔄 Syncing new products to Sanity…`)
   const results: string[] = []
@@ -1956,6 +1984,40 @@ bot.action('confirm_invoice_sync', async ctx => {
   } else {
     await ctx.reply('Nothing to sync.')
   }
+
+  if (hasPurchaseLines) {
+    await ctx.reply(
+      `Also create a purchase order for these ${ctx.session.pendingPurchaseLines?.length} products?`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('📦 Yes, create purchase order', 'invoice_start_purchase')],
+        [Markup.button.callback('Skip', 'cancel_action')],
+      ])
+    )
+  } else {
+    ctx.session = {}
+  }
+})
+
+bot.action('invoice_start_purchase', async ctx => {
+  await ctx.answerCbQuery()
+  const total = ctx.session.pendingPurchaseLines?.length ?? 0
+  if (total === 0) {
+    await ctx.reply('No products to create a purchase order for.')
+    ctx.session = {}
+    return
+  }
+  ctx.session.step = 'await_purchase_supplier'
+  await ctx.reply(
+    `✅ *${total} products* ready for the purchase order.\n\n*Which supplier is this invoice from?*`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.reply(
+    'Select supplier:',
+    Markup.inlineKeyboard([
+      ...SUPPLIERS.map(s => [Markup.button.callback(s.name, `purchase_supplier_${s.id}`)]),
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
+    ])
+  )
 })
 
 bot.action(/^inv_loc_(928|952)$/, async ctx => {
@@ -2156,10 +2218,28 @@ bot.action(/^purchase_supplier_(\d+)$/, async ctx => {
 
   ctx.session.pendingPurchaseSupplierId = supplierId
   ctx.session.pendingPurchaseSupplierName = supplier.name
-  ctx.session.step = 'await_purchase_rate'
 
   await ctx.reply(`✅ Supplier: *${supplier.name}*`, { parse_mode: 'Markdown' })
-  await ctx.reply(EXCHANGE_RATE_PROMPT, { parse_mode: 'Markdown' })
+
+  // If rate already known (e.g. from invoice PDF flow), skip straight to status
+  if (ctx.session.pendingPurchaseExchangeRate) {
+    ctx.session.step = 'await_purchase_status'
+    await ctx.reply(
+      `✅ Rate: ₦${ctx.session.pendingPurchaseExchangeRate.toLocaleString()}/USD (from invoice)\n\nWhat is the purchase status?`,
+      { parse_mode: 'Markdown' }
+    )
+    await ctx.reply(
+      'Select status:',
+      Markup.inlineKeyboard([[
+        Markup.button.callback('📦 Ordered',  'purchase_status_ordered'),
+        Markup.button.callback('✅ Received', 'purchase_status_received'),
+        Markup.button.callback('⏳ Pending',  'purchase_status_pending'),
+      ]])
+    )
+  } else {
+    ctx.session.step = 'await_purchase_rate'
+    await ctx.reply(EXCHANGE_RATE_PROMPT, { parse_mode: 'Markdown' })
+  }
 })
 
 bot.action(/^purchase_status_(ordered|received|pending)$/, async ctx => {
@@ -2755,7 +2835,8 @@ bot.on('document', async ctx => {
             const nearMatchProducts = allPos.filter((p: any) => {
               const pNameLower = p.parsedName.toLowerCase()
               return pNameLower !== row.posName.toLowerCase() &&
-                (pNameLower === baseColorLower || pNameLower.startsWith(baseColorLower + ' '))
+                (pNameLower === baseColorLower || pNameLower.startsWith(baseColorLower + ' ')) &&
+                !TAPE_SIZE_SUFFIX_RE.test(pNameLower)
             })
             if (nearMatchProducts.length > 0) {
               invoiceDisambigQueue.push({
