@@ -139,6 +139,13 @@ export class POSClient {
     if (!location.includes('/home')) {
       throw new Error(`POS login failed — redirected to: ${location || '(no redirect)'}`)
     }
+
+    // Follow the redirect to /home so the session is fully initialised
+    const homeRes = await fetch(location, {
+      headers: { Cookie: this.cookieHeader() },
+      redirect: 'manual',
+    })
+    this.updateJar(homeRes.headers)
   }
 
   async getProducts(): Promise<POSProduct[]> {
@@ -308,6 +315,11 @@ export class POSClient {
       additional_notes: '',
       total_before_tax: totalBeforeTax.toFixed(2),
       final_total:      finalTotal.toFixed(2),
+      // Payment section is required by UltimatePOS V5 even for ordered/pending status.
+      // Sending amount=0 records the purchase as unpaid.
+      'payment[0][amount]':   '0',
+      'payment[0][paid_on]':  transactionDate,
+      'payment[0][method]':   'cash',
     })
 
     input.lines.forEach((line, i) => {
@@ -315,6 +327,7 @@ export class POSClient {
       body.append(`purchases[${i}][variation_id]`,        line.variationId)
       body.append(`purchases[${i}][quantity]`,            String(line.quantity))
       body.append(`purchases[${i}][product_unit_id]`,     line.unitId)
+      body.append(`purchases[${i}][sub_unit_id]`,         line.unitId)
       body.append(`purchases[${i}][pp_without_discount]`, String(line.purchasePrice))
       body.append(`purchases[${i}][discount_percent]`,    '0.00')
       body.append(`purchases[${i}][purchase_price]`,      String(line.purchasePrice))
@@ -337,28 +350,43 @@ export class POSClient {
     this.updateJar(res.headers)
 
     const location = res.headers.get('location') ?? ''
-    const purchaseId = location.match(/\/purchases\/(\d+)/)?.[1] ?? ''
 
-    console.error(`[createPurchase] status=${res.status} redirect="${location}" purchaseId="${purchaseId}"`)
-    console.error(`[createPurchase] body keys sent: ${[...body.keys()].join(', ')}`)
-
-    if (res.status !== 302 || !purchaseId) {
-      throw new Error(`createPurchase failed — status ${res.status}, redirect: "${location || '(none)'}"`)
+    // UltimatePOS V5 redirects to the purchase LIST on success (not /purchases/{id}).
+    // Confirm success by reading the flash message from the redirect page.
+    if (res.status !== 302) {
+      throw new Error(`createPurchase failed — status ${res.status}`)
     }
 
-    // Fetch the ref_no from the edit page
-    let refNo = `#${purchaseId}`
-    if (purchaseId) {
-      try {
-        const editRes = await fetch(`${this.baseUrl}/purchases/${purchaseId}/edit`, {
-          headers: { Cookie: this.cookieHeader() },
-        })
-        const html = await editRes.text()
-        const m = html.match(/name="ref_no"[^>]*value="([^"]+)"/)
-          ?? html.match(/value="([^"]+)"[^>]*name="ref_no"/)
-        if (m) refNo = m[1]
-      } catch { /* use #id fallback */ }
+    const dest = location.startsWith('http') ? location : `${this.baseUrl}${location}`
+    const redirectRes = await fetch(dest, { headers: { Cookie: this.cookieHeader() } })
+    this.updateJar(redirectRes.headers)
+    const redirectHtml = await redirectRes.text()
+    const flashMsg = redirectHtml.match(/data-msg="([^"]+)"/)?.[1] ?? ''
+    if (!flashMsg.toLowerCase().includes('added successfully') && !flashMsg.toLowerCase().includes('created')) {
+      throw new Error(`createPurchase failed — flash: "${flashMsg}"`)
     }
+
+    // Fetch the most recent purchase from the list to get ref_no and ID.
+    // The list returns purchases in reverse chronological order by default.
+    const listRes = await fetch(`${this.baseUrl}/purchases?per_page=5`, {
+      headers: { Cookie: this.cookieHeader(), 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    const listData = await listRes.json() as { data?: Array<{ ref_no?: string; DT_RowAttr?: { 'data-href'?: string } }> }
+    const purchases = listData.data ?? []
+
+    // Find the purchase with the highest numeric ID (most recently created)
+    let purchaseId = ''
+    let refNo = ''
+    for (const p of purchases) {
+      const href = p.DT_RowAttr?.['data-href'] ?? ''
+      const id = href.match(/\/purchases\/(\d+)/)?.[1] ?? ''
+      if (id && (!purchaseId || parseInt(id) > parseInt(purchaseId))) {
+        purchaseId = id
+        refNo = p.ref_no ?? `#${id}`
+      }
+    }
+
+    if (!purchaseId) refNo = '(unknown)'
 
     return { refNo, purchaseId }
   }
