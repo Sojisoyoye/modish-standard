@@ -339,6 +339,9 @@ export class POSClient {
     const location = res.headers.get('location') ?? ''
     const purchaseId = location.match(/\/purchases\/(\d+)/)?.[1] ?? ''
 
+    console.error(`[createPurchase] status=${res.status} redirect="${location}" purchaseId="${purchaseId}"`)
+    console.error(`[createPurchase] body keys sent: ${[...body.keys()].join(', ')}`)
+
     if (res.status !== 302 || !purchaseId) {
       throw new Error(`createPurchase failed — status ${res.status}, redirect: "${location || '(none)'}"`)
     }
