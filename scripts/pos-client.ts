@@ -25,6 +25,7 @@ export interface CreateProductInput {
   sellingPrice: number
   categoryId?: string
   unitId?: string
+  locationId?: string  // override LOCATION_ID (e.g. '928' for purchase-order flow)
 }
 
 export interface PurchaseLine {
@@ -157,6 +158,7 @@ export class POSClient {
     const isEdgeTape = /\d+\s*(mm|MM)/.test(input.name)
     const categoryId = input.categoryId ?? (isEdgeTape ? EDGE_TAPE_CATEGORY_ID : BOARD_CATEGORY_ID)
     const unitId = input.unitId ?? (isEdgeTape ? EDGE_TAPE_UNIT_ID : BOARD_UNIT_ID)
+    const locationId = input.locationId ?? LOCATION_ID
 
     const body = new URLSearchParams({
       _token: csrf,
@@ -165,7 +167,7 @@ export class POSClient {
       barcode_type: 'C128',
       unit_id: unitId,
       category_id: categoryId,
-      'product_locations[]': LOCATION_ID,
+      'product_locations[]': locationId,
       enable_stock: '1',
       alert_quantity: '5',
       tax_type: 'exclusive',
@@ -200,8 +202,8 @@ export class POSClient {
   async searchProductForPurchase(
     name: string
   ): Promise<{ productId: string; variationId: string } | null> {
-    // No location_id — products may live in any location (existing stock is in loc 928)
-    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(name)}`
+    // Use location 928 (BL0001) — where purchaseable stock lives
+    const url = `${this.baseUrl}/purchases/get_products?term=${encodeURIComponent(name)}&location_id=928`
     const res = await fetch(url, {
       headers: {
         Cookie: this.cookieHeader(),
@@ -223,7 +225,7 @@ export class POSClient {
 
   async createPurchase(input: CreatePurchaseInput): Promise<{ refNo: string; purchaseId: string }> {
     const csrf = await this.getCsrf('/purchases/create')
-    const locationId = input.locationId ?? '952'
+    const locationId = input.locationId ?? '928'
 
     const now = new Date()
     const day    = String(now.getDate()).padStart(2, '0')

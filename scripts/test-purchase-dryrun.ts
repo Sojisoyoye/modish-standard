@@ -114,7 +114,7 @@ async function main() {
     console.log(`  contact_id:       <supplier id>`)
     console.log(`  transaction_date: ${d}-${m}-${y} ${h}:${min}`)
     console.log(`  status:           ordered`)
-    console.log(`  location_id:      952`)
+    console.log(`  location_id:      928`)
     console.log(`  shipping_charges: ${SHIPPING}`)
     console.log(`  total_before_tax: ${subtotal.toFixed(2)}`)
     console.log(`  final_total:      ${grandTotal.toFixed(2)}`)

@@ -145,7 +145,7 @@ function isAuthorized(userId: number | undefined): boolean {
 // ── Session types ─────────────────────────────────────────────────────────────
 
 interface SessionData {
-  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm' | 'await_purchase_file' | 'await_purchase_supplier' | 'await_purchase_rate' | 'await_purchase_status' | 'await_purchase_shipping' | 'await_purchase_shipping_label' | 'await_purchase_confirm'
+  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm' | 'await_purchase_file' | 'await_purchase_missing_confirm' | 'await_purchase_supplier' | 'await_purchase_rate' | 'await_purchase_status' | 'await_purchase_shipping' | 'await_purchase_shipping_label' | 'await_purchase_confirm'
   pendingCreate?: ParsedProduct[]
   pendingCategories?: string[]
   pendingImageSlug?: string
@@ -170,6 +170,8 @@ interface SessionData {
     usdUnitPrice: number
     face: 'Matt' | 'Embossed' | 'Glossy' | 'Unknown'
   }>
+  pendingPurchaseMissingRows?: InvoiceRow[]
+  pendingPurchaseNeedsCreate?: boolean
   pendingPurchaseSupplierId?: string
   pendingPurchaseSupplierName?: string
   pendingPurchaseExchangeRate?: number
@@ -553,16 +555,29 @@ async function handlePurchaseFile(ctx: BotContext, fileBuffer: Buffer, ext: stri
     }
   }
 
+  ctx.session.pendingPurchaseLines = found
+
   if (missing.length > 0) {
-    let msg = `❌ *${missing.length} product(s) not found in POS — cannot create purchase:*\n\n`
+    const missingRows = invoiceRows.filter(r => missing.includes(r.posName))
+    ctx.session.pendingPurchaseMissingRows = missingRows
+    ctx.session.pendingPurchaseNeedsCreate = true
+    ctx.session.step = 'await_purchase_missing_confirm'
+
+    let msg = `⚠️ *${missing.length} product(s) not yet in POS:*\n\n`
     msg += missing.map(n => `• ${n}`).join('\n')
-    msg += `\n\nUse /add with this PDF to create them first, then retry /purchase.`
+    if (found.length > 0) msg += `\n\n*${found.length} product(s)* are already in POS.`
+    msg += `\n\nShould I create the ${missing.length} missing product(s) now and include all ${found.length + missing.length} in the purchase?`
     await sendLong(ctx, msg)
-    ctx.session = {}
+    await ctx.reply(
+      'What would you like to do?',
+      Markup.inlineKeyboard([
+        [Markup.button.callback(`✅ Create ${missing.length} & continue`, 'purchase_create_and_continue')],
+        [Markup.button.callback('❌ Cancel', 'cancel_action')],
+      ])
+    )
     return
   }
 
-  ctx.session.pendingPurchaseLines = found
   ctx.session.step = 'await_purchase_supplier'
 
   await ctx.reply(
@@ -615,6 +630,98 @@ async function showPurchaseSummary(ctx: BotContext): Promise<void> {
         Markup.button.callback('✅ Create Purchase Order', 'confirm_purchase_create'),
         Markup.button.callback('❌ Cancel', 'cancel_action'),
       ],
+    ])
+  )
+}
+
+async function createMissingAndContinue(ctx: BotContext, rate: number): Promise<void> {
+  const missingRows = ctx.session.pendingPurchaseMissingRows ?? []
+
+  await ctx.reply(`✨ Creating ${missingRows.length} missing product(s) in POS…`)
+
+  let pos: POSClient
+  try {
+    pos = createPOSClientFromEnv()
+    await pos.login()
+  } catch (err: any) {
+    await ctx.reply(`❌ POS login failed: ${err.message ?? err}`)
+    ctx.session = {}
+    return
+  }
+
+  const createdNames: string[] = []
+  const createFailures: string[] = []
+
+  for (const row of missingRows) {
+    const costPrice   = Math.round(row.usdUnitPrice * rate)
+    const sellingPrice = row.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
+    try {
+      await pos.createProduct({ name: row.posName, costPrice, sellingPrice, locationId: '928' })
+      createdNames.push(row.posName)
+    } catch (err: any) {
+      createFailures.push(`❌ ${row.posName}: ${err.message ?? err}`)
+    }
+  }
+
+  if (createFailures.length > 0) {
+    await ctx.reply(
+      `⚠️ Some products failed to create:\n${createFailures.join('\n')}\n\nOnly successfully created products will be in the purchase.`
+    )
+  }
+
+  // Batch-verify SKUs, then re-search for product_id / variation_id
+  if (createdNames.length > 0) {
+    const allPos = await pos.getProducts()
+    const skuMap = new Map(allPos.map(p => [p.parsedName.toLowerCase(), p.sku]))
+    const skuLines: string[] = []
+    for (const name of createdNames) {
+      const sku = skuMap.get(name.toLowerCase()) ?? 'N/A'
+      skuLines.push(`✅ ${name} (SKU: ${sku})`)
+    }
+    await ctx.reply(`*Created:*\n${skuLines.join('\n')}`, { parse_mode: 'Markdown' })
+  }
+
+  // Look up product_id + variation_id for each created product
+  const newLines: NonNullable<SessionData['pendingPurchaseLines']> = []
+  const stillMissing: string[] = []
+
+  for (const row of missingRows) {
+    if (!createdNames.includes(row.posName)) continue
+    const match = await pos.searchProductForPurchase(row.posName)
+    if (match) {
+      newLines.push({
+        posName:     row.posName,
+        productId:   match.productId,
+        variationId: match.variationId,
+        unitId:      row.categorySlug === 'edge-tapes' ? '2097' : '2094',
+        quantity:    row.quantity,
+        usdUnitPrice: row.usdUnitPrice,
+        face:        row.face,
+      })
+    } else {
+      stillMissing.push(row.posName)
+    }
+  }
+
+  if (stillMissing.length > 0) {
+    await ctx.reply(`⚠️ Created but couldn't resolve for purchase: ${stillMissing.join(', ')}\nThese will be excluded from the purchase order.`)
+  }
+
+  ctx.session.pendingPurchaseLines = [...(ctx.session.pendingPurchaseLines ?? []), ...newLines]
+  ctx.session.pendingPurchaseMissingRows = undefined
+  ctx.session.pendingPurchaseNeedsCreate = undefined
+  ctx.session.step = 'await_purchase_supplier'
+
+  const total = ctx.session.pendingPurchaseLines.length
+  await ctx.reply(
+    `✅ Done — *${total} products* ready for the purchase order.\n\n*Which supplier is this invoice from?*`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.reply(
+    'Select supplier:',
+    Markup.inlineKeyboard([
+      ...SUPPLIERS.map(s => [Markup.button.callback(s.name, `purchase_supplier_${s.id}`)]),
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
     ])
   )
 }
@@ -1651,6 +1758,16 @@ bot.action('confirm_invoice_sync', async ctx => {
   }
 })
 
+bot.action('purchase_create_and_continue', async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_missing_confirm') return
+  ctx.session.step = 'await_purchase_rate'
+  await ctx.reply(
+    `What exchange rate *(NGN/USD)* should I use? This will be used for both creating the products and the purchase costs.\n_Example: type \`1400\` for ₦1,400 per USD_`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
 bot.action(/^purchase_supplier_(\d+)$/, async ctx => {
   await ctx.answerCbQuery()
   const supplierId = ctx.match[1]
@@ -1978,6 +2095,11 @@ bot.on('text', async ctx => {
     return
   }
 
+  if (step === 'await_purchase_missing_confirm') {
+    await ctx.reply('Please use the buttons above to choose, or /cancel to abort.')
+    return
+  }
+
   if (step === 'await_purchase_supplier') {
     await ctx.reply('Please select a supplier using the buttons above, or /cancel to abort.')
     return
@@ -1994,19 +2116,25 @@ bot.on('text', async ctx => {
       return
     }
     ctx.session.pendingPurchaseExchangeRate = rate
-    ctx.session.step = 'await_purchase_status'
-    await ctx.reply(
-      `✅ Rate: ₦${rate.toLocaleString()}/USD\n\nWhat is the purchase status?`,
-      { parse_mode: 'Markdown' }
-    )
-    await ctx.reply(
-      'Select status:',
-      Markup.inlineKeyboard([[
-        Markup.button.callback('📦 Ordered',  'purchase_status_ordered'),
-        Markup.button.callback('✅ Received', 'purchase_status_received'),
-        Markup.button.callback('⏳ Pending',  'purchase_status_pending'),
-      ]])
-    )
+
+    if (ctx.session.pendingPurchaseNeedsCreate) {
+      // Create missing products at location 928 then proceed to supplier selection
+      await createMissingAndContinue(ctx, rate)
+    } else {
+      ctx.session.step = 'await_purchase_status'
+      await ctx.reply(
+        `✅ Rate: ₦${rate.toLocaleString()}/USD\n\nWhat is the purchase status?`,
+        { parse_mode: 'Markdown' }
+      )
+      await ctx.reply(
+        'Select status:',
+        Markup.inlineKeyboard([[
+          Markup.button.callback('📦 Ordered',  'purchase_status_ordered'),
+          Markup.button.callback('✅ Received', 'purchase_status_received'),
+          Markup.button.callback('⏳ Pending',  'purchase_status_pending'),
+        ]])
+      )
+    }
     return
   }
 
