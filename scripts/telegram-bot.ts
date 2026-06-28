@@ -145,7 +145,7 @@ function isAuthorized(userId: number | undefined): boolean {
 // ── Session types ─────────────────────────────────────────────────────────────
 
 interface SessionData {
-  step?: 'await_product_text' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm' | 'await_purchase_file' | 'await_purchase_missing_confirm' | 'await_purchase_supplier' | 'await_purchase_rate' | 'await_purchase_status' | 'await_purchase_shipping' | 'await_purchase_shipping_label' | 'await_purchase_confirm'
+  step?: 'await_product_text' | 'await_add_location' | 'await_add_category' | 'await_confirm_create' | 'await_sync_after_create' | 'await_image_photo' | 'await_category_description' | 'await_sanity_product_category' | 'await_sanity_product_price' | 'await_sanity_product_description' | 'await_exchange_rate_for_invoice' | 'await_invoice_confirm' | 'await_purchase_file' | 'await_purchase_missing_confirm' | 'await_purchase_location' | 'await_purchase_category' | 'await_purchase_supplier' | 'await_purchase_rate' | 'await_purchase_status' | 'await_purchase_shipping' | 'await_purchase_shipping_label' | 'await_purchase_confirm'
   pendingCreate?: ParsedProduct[]
   pendingCategories?: string[]
   pendingImageSlug?: string
@@ -172,6 +172,10 @@ interface SessionData {
   }>
   pendingPurchaseMissingRows?: InvoiceRow[]
   pendingPurchaseNeedsCreate?: boolean
+  pendingAddLocationId?: string
+  pendingAddCategoryOverride?: string
+  pendingPurchaseLocationId?: string
+  pendingPurchaseCategoryOverride?: string
   pendingPurchaseSupplierId?: string
   pendingPurchaseSupplierName?: string
   pendingPurchaseExchangeRate?: number
@@ -482,13 +486,14 @@ async function checkAndSummarise(
   ctx.session.pendingCreate = missingParsed
   const uniqueCategories = Array.from(new Set(missingParsed.map(p => p.categorySlug)))
   ctx.session.pendingCategories = uniqueCategories
-  ctx.session.step = 'await_confirm_create'
+  ctx.session.step = 'await_add_location'
 
   await ctx.reply(
-    `Create the ${missingParsed.length} missing product(s) in POS?`,
+    `Which location should these ${missingParsed.length} product(s) be created at?`,
     Markup.inlineKeyboard([
-      Markup.button.callback(`✅ Yes, create ${missingParsed.length}`, 'confirm_create'),
-      Markup.button.callback('❌ Cancel', 'cancel_action'),
+      [Markup.button.callback('🏪 BL0001 — Main Store (928)', 'add_loc_928')],
+      [Markup.button.callback('🏬 BL0002 (952)', 'add_loc_952')],
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
     ])
   )
 }
@@ -656,7 +661,7 @@ async function createMissingAndContinue(ctx: BotContext, rate: number): Promise<
     const costPrice   = Math.round(row.usdUnitPrice * rate)
     const sellingPrice = row.face === 'Glossy' ? INVOICE_SELLING_PRICE_GLOSSY : INVOICE_SELLING_PRICE_NORMAL
     try {
-      await pos.createProduct({ name: row.posName, costPrice, sellingPrice, locationId: '928' })
+      await pos.createProduct({ name: row.posName, costPrice, sellingPrice, locationId: ctx.session.pendingPurchaseLocationId ?? '928' })
       createdNames.push(row.posName)
     } catch (err: any) {
       createFailures.push(`❌ ${row.posName}: ${err.message ?? err}`)
@@ -1562,6 +1567,67 @@ bot.command('add', async ctx => {
 
 // ── Inline keyboard callbacks ─────────────────────────────────────────────────
 
+bot.action(/^add_loc_(928|952)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_add_location') return
+
+  ctx.session.pendingAddLocationId = ctx.match[1]
+  const pending = ctx.session.pendingCreate ?? []
+  const needsCategory = pending.some(p => p.categorySlug === 'accessories')
+
+  if (needsCategory) {
+    ctx.session.step = 'await_add_category'
+    await ctx.reply(
+      `✅ Location: *${ctx.match[1] === '928' ? 'BL0001 — Main Store' : 'BL0002'} (${ctx.match[1]})*\n\nSome products couldn't be auto-categorized. Which Sanity category should they go in?`,
+      { parse_mode: 'Markdown' }
+    )
+    await ctx.reply(
+      'Select category:',
+      Markup.inlineKeyboard([
+        [Markup.button.callback('MDF Boards', 'add_cat_mdf-boards'), Markup.button.callback('HDF Boards', 'add_cat_hdf-boards')],
+        [Markup.button.callback('UV Gloss Boards', 'add_cat_uv-gloss-boards'), Markup.button.callback('Marine Boards', 'add_cat_marine-boards')],
+        [Markup.button.callback('Block Boards', 'add_cat_block-boards'), Markup.button.callback('Doors', 'add_cat_doors')],
+        [Markup.button.callback('PU Stone Panels', 'add_cat_pu-stone-panels')],
+      ])
+    )
+  } else {
+    ctx.session.step = 'await_confirm_create'
+    await ctx.reply(
+      `Create the ${pending.length} missing product(s) in POS?`,
+      Markup.inlineKeyboard([
+        Markup.button.callback(`✅ Yes, create ${pending.length}`, 'confirm_create'),
+        Markup.button.callback('❌ Cancel', 'cancel_action'),
+      ])
+    )
+  }
+})
+
+bot.action(/^add_cat_(.+)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_add_category') return
+
+  const categoryOverride = ctx.match[1]
+  ctx.session.pendingAddCategoryOverride = categoryOverride
+
+  const cats = ctx.session.pendingCategories ?? []
+  ctx.session.pendingCategories = [
+    ...cats.filter(c => c !== 'accessories'),
+    categoryOverride,
+  ]
+
+  const pending = ctx.session.pendingCreate ?? []
+  ctx.session.step = 'await_confirm_create'
+
+  await ctx.reply(`✅ Category: *${categoryOverride}*`, { parse_mode: 'Markdown' })
+  await ctx.reply(
+    `Create the ${pending.length} missing product(s) in POS?`,
+    Markup.inlineKeyboard([
+      Markup.button.callback(`✅ Yes, create ${pending.length}`, 'confirm_create'),
+      Markup.button.callback('❌ Cancel', 'cancel_action'),
+    ])
+  )
+})
+
 bot.action('confirm_create', async ctx => {
   await ctx.answerCbQuery()
 
@@ -1587,12 +1653,14 @@ bot.action('confirm_create', async ctx => {
   const createdNames: string[] = []
   const failures: string[] = []
 
+  const addLocationId = ctx.session.pendingAddLocationId
   for (const product of pending) {
     try {
       await pos.createProduct({
         name: product.name,
         costPrice: product.costPrice ?? Math.round((product.price ?? 0) * 0.65),
         sellingPrice: product.price ?? 0,
+        ...(addLocationId ? { locationId: addLocationId } : {}),
       })
       createdNames.push(product.name)
     } catch (err: any) {
@@ -1618,6 +1686,8 @@ bot.action('confirm_create', async ctx => {
 
   const categories = ctx.session.pendingCategories ?? []
   ctx.session.pendingCreate = undefined
+  ctx.session.pendingAddLocationId = undefined
+  ctx.session.pendingAddCategoryOverride = undefined
   ctx.session.step = 'await_sync_after_create'
 
   if (successes.length > 0) {
@@ -1761,7 +1831,57 @@ bot.action('confirm_invoice_sync', async ctx => {
 bot.action('purchase_create_and_continue', async ctx => {
   await ctx.answerCbQuery()
   if (ctx.session.step !== 'await_purchase_missing_confirm') return
+  ctx.session.step = 'await_purchase_location'
+  await ctx.reply(
+    'Which location should the missing products be created at?',
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🏪 BL0001 — Main Store (928)', 'pur_loc_928')],
+      [Markup.button.callback('🏬 BL0002 (952)', 'pur_loc_952')],
+      [Markup.button.callback('❌ Cancel', 'cancel_action')],
+    ])
+  )
+})
+
+bot.action(/^pur_loc_(928|952)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_location') return
+
+  ctx.session.pendingPurchaseLocationId = ctx.match[1]
+  const missingRows = ctx.session.pendingPurchaseMissingRows ?? []
+  const needsCategory = missingRows.some(r => r.categorySlug === 'accessories')
+
+  if (needsCategory) {
+    ctx.session.step = 'await_purchase_category'
+    await ctx.reply(
+      `✅ Location: *${ctx.match[1] === '928' ? 'BL0001 — Main Store' : 'BL0002'} (${ctx.match[1]})*\n\nSome products couldn't be auto-categorized. Which category should they go in?`,
+      { parse_mode: 'Markdown' }
+    )
+    await ctx.reply(
+      'Select category:',
+      Markup.inlineKeyboard([
+        [Markup.button.callback('MDF Boards', 'pur_cat_mdf-boards'), Markup.button.callback('HDF Boards', 'pur_cat_hdf-boards')],
+        [Markup.button.callback('UV Gloss Boards', 'pur_cat_uv-gloss-boards'), Markup.button.callback('Marine Boards', 'pur_cat_marine-boards')],
+        [Markup.button.callback('Block Boards', 'pur_cat_block-boards'), Markup.button.callback('Doors', 'pur_cat_doors')],
+        [Markup.button.callback('PU Stone Panels', 'pur_cat_pu-stone-panels')],
+      ])
+    )
+  } else {
+    ctx.session.step = 'await_purchase_rate'
+    await ctx.reply(
+      `What exchange rate *(NGN/USD)* should I use? This will be used for both creating the products and the purchase costs.\n_Example: type \`1400\` for ₦1,400 per USD_`,
+      { parse_mode: 'Markdown' }
+    )
+  }
+})
+
+bot.action(/^pur_cat_(.+)$/, async ctx => {
+  await ctx.answerCbQuery()
+  if (ctx.session.step !== 'await_purchase_category') return
+
+  ctx.session.pendingPurchaseCategoryOverride = ctx.match[1]
   ctx.session.step = 'await_purchase_rate'
+
+  await ctx.reply(`✅ Category: *${ctx.match[1]}*`, { parse_mode: 'Markdown' })
   await ctx.reply(
     `What exchange rate *(NGN/USD)* should I use? This will be used for both creating the products and the purchase costs.\n_Example: type \`1400\` for ₦1,400 per USD_`,
     { parse_mode: 'Markdown' }
@@ -2097,6 +2217,26 @@ bot.on('text', async ctx => {
 
   if (step === 'await_purchase_missing_confirm') {
     await ctx.reply('Please use the buttons above to choose, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_add_location') {
+    await ctx.reply('Please select a location using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_add_category') {
+    await ctx.reply('Please select a category using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_location') {
+    await ctx.reply('Please select a location using the buttons above, or /cancel to abort.')
+    return
+  }
+
+  if (step === 'await_purchase_category') {
+    await ctx.reply('Please select a category using the buttons above, or /cancel to abort.')
     return
   }
 
